@@ -77,6 +77,12 @@ spec:
                       type: string
                       enum: [Delete, Retain]
                       default: Delete
+                    annotations:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: Optional annotations to apply to the PersistentVolumeClaim (useful for storage-class specific parameters like volumeBindingMode)
+                      nullable: true
                 validatorConfig:
                   type: object
                   properties:

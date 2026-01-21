@@ -90,11 +90,19 @@ fn build_pvc(node: &StellarNode) -> PersistentVolumeClaim {
     let mut requests = BTreeMap::new();
     requests.insert("storage".to_string(), Quantity(node.spec.storage.size.clone()));
 
+    // Merge custom annotations from storage config with existing annotations
+    let annotations = node.spec.storage.annotations.clone().unwrap_or_default();
+
     PersistentVolumeClaim {
         metadata: ObjectMeta {
             name: Some(name),
             namespace: node.namespace(),
             labels: Some(labels),
+            annotations: if annotations.is_empty() {
+                None
+            } else {
+                Some(annotations)
+            },
             owner_references: Some(vec![owner_reference(node)]),
             ..Default::default()
         },

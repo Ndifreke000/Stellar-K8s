@@ -2,6 +2,8 @@
 //!
 //! These types are used across the CRD definitions and controller logic.
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -101,6 +103,10 @@ pub struct StorageConfig {
     /// Retention policy when the node is deleted
     #[serde(default)]
     pub retention_policy: RetentionPolicy,
+    /// Optional annotations to apply to the PersistentVolumeClaim
+    /// Useful for storage-class specific parameters (e.g., volumeBindingMode)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<BTreeMap<String, String>>,
 }
 
 impl Default for StorageConfig {
@@ -109,6 +115,7 @@ impl Default for StorageConfig {
             storage_class: "standard".to_string(),
             size: "100Gi".to_string(),
             retention_policy: RetentionPolicy::default(),
+            annotations: None,
         }
     }
 }
