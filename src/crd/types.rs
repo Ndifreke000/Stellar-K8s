@@ -215,6 +215,73 @@ pub struct SecretKeyRef {
     pub key: String,
 }
 
+/// Ingress configuration for exposing Horizon or Soroban RPC over HTTPS
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IngressConfig {
+    /// Optional ingressClassName (e.g., "nginx", "traefik")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class_name: Option<String>,
+
+    /// Host rules with paths to route to the Service
+    pub hosts: Vec<IngressHost>,
+
+    /// TLS secret name used by the ingress controller for HTTPS termination
+    /// If provided, all hosts are added to the TLS section
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_secret_name: Option<String>,
+
+    /// cert-manager issuer name (namespaced)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cert_manager_issuer: Option<String>,
+
+    /// cert-manager cluster issuer name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cert_manager_cluster_issuer: Option<String>,
+
+    /// Additional annotations to attach to the Ingress
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<BTreeMap<String, String>>,
+}
+
+/// Ingress host entry
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IngressHost {
+    /// DNS host name (e.g., "horizon.stellar.example.com")
+    pub host: String,
+
+    /// HTTP paths served for this host
+    #[serde(
+        default = "default_ingress_paths",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub paths: Vec<IngressPath>,
+}
+
+/// Ingress path mapping
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IngressPath {
+    /// HTTP path prefix (e.g., "/")
+    pub path: String,
+
+    /// Path type ("Prefix" or "Exact")
+    #[serde(default = "default_path_type")]
+    pub path_type: Option<String>,
+}
+
+fn default_ingress_paths() -> Vec<IngressPath> {
+    vec![IngressPath {
+        path: "/".to_string(),
+        path_type: default_path_type(),
+    }]
+}
+
+fn default_path_type() -> Option<String> {
+    Some("Prefix".to_string())
+}
+
 fn default_max_events() -> u32 {
     10000
 }

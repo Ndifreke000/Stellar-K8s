@@ -7,8 +7,7 @@ use std::collections::BTreeMap;
 
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec, StatefulSet, StatefulSetSpec};
 use k8s_openapi::api::autoscaling::v2::{
-    CrossVersionObjectReference, HorizontalPodAutoscaler, HorizontalPodAutoscalerSpec, MetricSpec,
-    ResourceMetricSource, ResourceMetricStatus,
+    CrossVersionObjectReference, HorizontalPodAutoscaler, HorizontalPodAutoscalerSpec,
 };
 use k8s_openapi::api::core::v1::{
     ConfigMap, Container, ContainerPort, EnvVar, EnvVarSource, PersistentVolumeClaim,
@@ -16,13 +15,17 @@ use k8s_openapi::api::core::v1::{
     SecretKeySelector, Service, ServicePort, ServiceSpec, Volume, VolumeMount,
     VolumeResourceRequirements,
 };
+use k8s_openapi::api::networking::v1::{
+    HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
+    IngressServiceBackend, IngressSpec, IngressTLS, ServiceBackendPort,
+};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
-use kube::{Client, CustomResourceExt, Resource, ResourceExt};
+use kube::{Client, Resource, ResourceExt};
 use tracing::{info, warn};
 
-use crate::crd::{NodeType, StellarNode};
+use crate::crd::{IngressConfig, NodeType, StellarNode};
 use crate::error::{Error, Result};
 
 /// Get the standard labels for a StellarNode's resources
@@ -455,6 +458,143 @@ pub async fn delete_service(client: &Client, node: &StellarNode) -> Result<()> {
         Ok(_) => info!("Deleted Service {}", name),
         Err(kube::Error::Api(e)) if e.code == 404 => {
             warn!("Service {} not found", name);
+        }
+        Err(e) => return Err(Error::KubeError(e)),
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Ingress
+// ============================================================================
+
+/// Ensure an Ingress exists for Horizon or Soroban RPC nodes when configured
+pub async fn ensure_ingress(client: &Client, node: &StellarNode) -> Result<()> {
+    // Ingress is only supported for Horizon and SorobanRpc
+    let ingress_cfg = match &node.spec.ingress {
+        Some(cfg)
+            if matches!(
+                node.spec.node_type,
+                NodeType::Horizon | NodeType::SorobanRpc
+            ) =>
+        {
+            cfg
+        }
+        _ => return Ok(()),
+    };
+
+    let namespace = node.namespace().unwrap_or_else(|| "default".to_string());
+    let api: Api<Ingress> = Api::namespaced(client.clone(), &namespace);
+    let name = resource_name(node, "ingress");
+
+    let ingress = build_ingress(node, ingress_cfg);
+
+    api.patch(
+        &name,
+        &PatchParams::apply("stellar-operator").force(),
+        &Patch::Apply(&ingress),
+    )
+    .await?;
+
+    info!("Ingress ensured for {}/{}", namespace, name);
+    Ok(())
+}
+
+fn build_ingress(node: &StellarNode, config: &IngressConfig) -> Ingress {
+    let labels = standard_labels(node);
+    let name = resource_name(node, "ingress");
+
+    let service_port = match node.spec.node_type {
+        NodeType::Horizon | NodeType::SorobanRpc => 8000,
+        NodeType::Validator => 11626,
+    };
+
+    // Merge user-provided annotations with cert-manager issuer hints
+    let mut annotations = config.annotations.clone().unwrap_or_default();
+    if let Some(issuer) = &config.cert_manager_issuer {
+        annotations.insert("cert-manager.io/issuer".to_string(), issuer.clone());
+    }
+    if let Some(cluster_issuer) = &config.cert_manager_cluster_issuer {
+        annotations.insert(
+            "cert-manager.io/cluster-issuer".to_string(),
+            cluster_issuer.clone(),
+        );
+    }
+
+    let rules: Vec<IngressRule> = config
+        .hosts
+        .iter()
+        .map(|host| IngressRule {
+            host: Some(host.host.clone()),
+            http: Some(HTTPIngressRuleValue {
+                paths: host
+                    .paths
+                    .iter()
+                    .map(|p| HTTPIngressPath {
+                        path: Some(p.path.clone()),
+                        path_type: p.path_type.clone().unwrap_or_else(|| "Prefix".to_string()),
+                        backend: IngressBackend {
+                            service: Some(IngressServiceBackend {
+                                name: node.name_any(),
+                                port: Some(ServiceBackendPort {
+                                    number: Some(service_port),
+                                    name: None,
+                                }),
+                            }),
+                            ..Default::default()
+                        },
+                    })
+                    .collect(),
+            }),
+        })
+        .collect();
+
+    let tls = config.tls_secret_name.as_ref().map(|secret| {
+        vec![IngressTLS {
+            hosts: Some(config.hosts.iter().map(|h| h.host.clone()).collect()),
+            secret_name: Some(secret.clone()),
+            ..Default::default()
+        }]
+    });
+
+    Ingress {
+        metadata: ObjectMeta {
+            name: Some(name),
+            namespace: node.namespace(),
+            labels: Some(labels),
+            annotations: if annotations.is_empty() {
+                None
+            } else {
+                Some(annotations)
+            },
+            owner_references: Some(vec![owner_reference(node)]),
+            ..Default::default()
+        },
+        spec: Some(IngressSpec {
+            ingress_class_name: config.class_name.clone(),
+            rules: Some(rules),
+            tls,
+            ..Default::default()
+        }),
+        status: None,
+    }
+}
+
+/// Delete the Ingress for a node
+pub async fn delete_ingress(client: &Client, node: &StellarNode) -> Result<()> {
+    if node.spec.ingress.is_none() {
+        return Ok(());
+    }
+
+    let namespace = node.namespace().unwrap_or_else(|| "default".to_string());
+    let api: Api<Ingress> = Api::namespaced(client.clone(), &namespace);
+    let name = resource_name(node, "ingress");
+
+    match api.delete(&name, &DeleteParams::default()).await {
+        Ok(_) => info!("Deleted Ingress {}", name),
+        Err(kube::Error::Api(e)) if e.code == 404 => {
+            warn!("Ingress {} not found, already deleted", name);
         }
         Err(e) => return Err(Error::KubeError(e)),
     }
