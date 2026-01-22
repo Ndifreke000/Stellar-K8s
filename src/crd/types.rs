@@ -187,6 +187,27 @@ pub struct SorobanConfig {
     pub max_events_per_request: u32,
 }
 
+/// External database configuration for managed Postgres databases
+/// Supports RDS, Cloud SQL, CockroachDB, and other managed database services
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalDatabaseConfig {
+    /// Reference to a Kubernetes Secret containing database credentials
+    pub secret_key_ref: SecretKeyRef,
+}
+
+/// Reference to a key within a Kubernetes Secret
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretKeyRef {
+    /// Name of the Secret resource
+    pub name: String,
+    /// Key within the Secret to use for the database connection string
+    /// Common keys: "DATABASE_URL", "connection-string", "url"
+    /// For individual components: "host", "port", "database", "user", "password"
+    pub key: String,
+}
+
 fn default_max_events() -> u32 {
     10000
 }

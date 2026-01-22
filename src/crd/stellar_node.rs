@@ -8,8 +8,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::types::{
-    Condition, HorizonConfig, NodeType, ResourceRequirements, RetentionPolicy,
-    SorobanConfig, StellarNetwork, StorageConfig, ValidatorConfig,
+    Condition, ExternalDatabaseConfig, HorizonConfig, NodeType, ResourceRequirements,
+    RetentionPolicy, SorobanConfig, StellarNetwork, StorageConfig, ValidatorConfig,
 };
 
 /// The StellarNode CRD represents a managed Stellar infrastructure node.
@@ -98,6 +98,12 @@ pub struct StellarNodeSpec {
     /// Suspend the node (scale to 0 without deleting resources)
     #[serde(default)]
     pub suspended: bool,
+
+    /// External database configuration for managed Postgres databases
+    /// When provided, database credentials will be fetched from the specified Secret
+    /// and injected as environment variables into the container
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<ExternalDatabaseConfig>,
 }
 
 fn default_replicas() -> i32 {

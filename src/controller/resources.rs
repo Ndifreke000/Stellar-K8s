@@ -9,9 +9,10 @@ use k8s_openapi::api::apps::v1::{
     Deployment, DeploymentSpec, StatefulSet, StatefulSetSpec,
 };
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, ContainerPort, EnvVar, PersistentVolumeClaim,
+    ConfigMap, Container, ContainerPort, EnvVar, EnvVarSource, PersistentVolumeClaim,
     PersistentVolumeClaimSpec, PodSpec, PodTemplateSpec, ResourceRequirements as K8sResources,
-    Service, ServicePort, ServiceSpec, Volume, VolumeMount, VolumeResourceRequirements,
+    SecretKeySelector, Service, ServicePort, ServiceSpec, Volume, VolumeMount,
+    VolumeResourceRequirements,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
@@ -480,11 +481,34 @@ fn build_container(node: &StellarNode) -> Container {
         Quantity(node.spec.resources.limits.memory.clone()),
     );
 
-    let (container_port, data_mount_path) = match node.spec.node_type {
-        NodeType::Validator => (11625, "/opt/stellar/data"),
-        NodeType::Horizon => (8000, "/data"),
-        NodeType::SorobanRpc => (8000, "/data"),
+    let (container_port, data_mount_path, db_env_var_name) = match node.spec.node_type {
+        NodeType::Validator => (11625, "/opt/stellar/data", "DATABASE"),
+        NodeType::Horizon => (8000, "/data", "DATABASE_URL"),
+        NodeType::SorobanRpc => (8000, "/data", "DATABASE_URL"),
     };
+
+    // Build environment variables
+    let mut env_vars = vec![EnvVar {
+        name: "NETWORK_PASSPHRASE".to_string(),
+        value: Some(node.spec.network.passphrase().to_string()),
+        ..Default::default()
+    }];
+
+    // Add database environment variable from secret if external database is configured
+    if let Some(db_config) = &node.spec.database {
+        env_vars.push(EnvVar {
+            name: db_env_var_name.to_string(),
+            value: None,
+            value_from: Some(EnvVarSource {
+                secret_key_ref: Some(SecretKeySelector {
+                    name: Some(db_config.secret_key_ref.name.clone()),
+                    key: db_config.secret_key_ref.key.clone(),
+                    optional: None,
+                }),
+                ..Default::default()
+            }),
+        });
+    }
 
     Container {
         name: "stellar-node".to_string(),
@@ -493,11 +517,7 @@ fn build_container(node: &StellarNode) -> Container {
             container_port,
             ..Default::default()
         }]),
-        env: Some(vec![EnvVar {
-            name: "NETWORK_PASSPHRASE".to_string(),
-            value: Some(node.spec.network.passphrase().to_string()),
-            ..Default::default()
-        }]),
+        env: Some(env_vars),
         resources: Some(K8sResources {
             requests: Some(requests),
             limits: Some(limits),
