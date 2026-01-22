@@ -165,6 +165,9 @@ async fn apply_stellar_node(client: &Client, node: &StellarNode) -> Result<Actio
         info!("HPA ensured for {}/{}", namespace, name);
     }
 
+    // 7. Create/update alerting rules
+    resources::ensure_alerting(client, node).await?;
+    info!("Alerting ensured for {}/{}", namespace, name);
     // 8. Fetch the ready replicas from Deployment/StatefulSet status
     let ready_replicas = get_ready_replicas(client, node).await.unwrap_or(0);
 
@@ -195,6 +198,11 @@ async fn cleanup_stellar_node(client: &Client, node: &StellarNode) -> Result<Act
     info!("Cleaning up StellarNode: {}/{}", namespace, name);
 
     // Delete resources in reverse order of creation
+
+    // 0. Delete Alerting
+    if let Err(e) = resources::delete_alerting(client, node).await {
+        warn!("Failed to delete alerting: {:?}", e);
+    }
 
     // 1. Delete HPA (if autoscaling was configured)
     if let Err(e) = resources::delete_hpa(client, node).await {

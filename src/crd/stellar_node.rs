@@ -100,6 +100,10 @@ pub struct StellarNodeSpec {
     #[serde(default)]
     pub suspended: bool,
 
+    /// Enable alerting via PrometheusRule or ConfigMap
+    #[serde(default)]
+    pub alerting: bool,
+
     /// External database configuration for managed Postgres databases
     /// When provided, database credentials will be fetched from the specified Secret
     /// and injected as environment variables into the container
