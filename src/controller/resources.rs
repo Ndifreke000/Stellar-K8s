@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec, StatefulSet, StatefulSetSpec};
 use k8s_openapi::api::autoscaling::v2::{
     CrossVersionObjectReference, HorizontalPodAutoscaler, HorizontalPodAutoscalerSpec,
+    MetricSpec, MetricTarget, ObjectMetricSource, MetricIdentifier,
+    HPAScalingRules, HPAScalingPolicy, HorizontalPodAutoscalerBehavior,
 };
 use k8s_openapi::api::core::v1::{
     ConfigMap, Container, ContainerPort, EnvVar, EnvVarSource, PersistentVolumeClaim,
@@ -977,15 +979,71 @@ fn build_hpa(node: &StellarNode) -> Result<HorizontalPodAutoscaler> {
     let name = resource_name(node, "hpa");
     let deployment_name = node.name_any();
 
-    // Note: Custom metrics require Prometheus Adapter to be installed
-    // For now, we create a basic HPA with just the min/max replicas configured
-    // Users can manually add metrics via kubectl or kustomize/helm patches
-    if !autoscaling.custom_metrics.is_empty() {
-        info!(
-            "Custom metrics configured: {:?}. These require Prometheus Adapter to be installed.",
-            autoscaling.custom_metrics
-        );
+    let mut metrics = Vec::new();
+
+    // Add CPU utilization metric if configured
+    if let Some(target_cpu) = autoscaling.target_cpu_utilization_percentage {
+        metrics.push(MetricSpec {
+            type_: "Resource".to_string(),
+            resource: Some(k8s_openapi::api::autoscaling::v2::ResourceMetricSource {
+                name: "cpu".to_string(),
+                target: MetricTarget {
+                    type_: "Utilization".to_string(),
+                    average_utilization: Some(target_cpu),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        });
     }
+
+    // Add custom metrics
+    for metric_name in &autoscaling.custom_metrics {
+        if metric_name == "ledger_ingestion_lag" {
+            metrics.push(MetricSpec {
+                type_: "Object".to_string(),
+                object: Some(ObjectMetricSource {
+                    described_object: CrossVersionObjectReference {
+                        api_version: Some("stellar.org/v1alpha1".to_string()),
+                        kind: "StellarNode".to_string(),
+                        name: node.name_any(),
+                    },
+                    metric: MetricIdentifier {
+                        name: "stellar_node_ingestion_lag".to_string(),
+                        selector: None,
+                    },
+                    target: MetricTarget {
+                        type_: "Value".to_string(),
+                        value: Some(Quantity("5".to_string())), // Scale if lag > 5 ledgers
+                        ..Default::default()
+                    },
+                }),
+                ..Default::default()
+            });
+        }
+        // Add more custom metrics mapping here (e.g., request throughput)
+    }
+
+    let behavior = autoscaling.behavior.as_ref().map(|b| HorizontalPodAutoscalerBehavior {
+        scale_up: b.scale_up.as_ref().map(|s| HPAScalingRules {
+            stabilization_window_seconds: s.stabilization_window_seconds,
+            policies: Some(s.policies.iter().map(|p| HPAScalingPolicy {
+                type_: p.policy_type.clone(),
+                value: p.value,
+                period_seconds: p.period_seconds,
+            }).collect()),
+            select_policy: Some("Max".to_string()),
+        }),
+        scale_down: b.scale_down.as_ref().map(|s| HPAScalingRules {
+            stabilization_window_seconds: s.stabilization_window_seconds,
+            policies: Some(s.policies.iter().map(|p| HPAScalingPolicy {
+                type_: p.policy_type.clone(),
+                value: p.value,
+                period_seconds: p.period_seconds,
+            }).collect()),
+            select_policy: Some("Min".to_string()),
+        }),
+    });
 
     let hpa = HorizontalPodAutoscaler {
         metadata: ObjectMeta {
@@ -1003,8 +1061,8 @@ fn build_hpa(node: &StellarNode) -> Result<HorizontalPodAutoscaler> {
             },
             min_replicas: Some(autoscaling.min_replicas),
             max_replicas: autoscaling.max_replicas,
-            metrics: None,
-            behavior: None,
+            metrics: if metrics.is_empty() { None } else { Some(metrics) },
+            behavior,
         }),
         status: None,
     };

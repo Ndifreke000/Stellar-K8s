@@ -21,7 +21,7 @@ use kube::{
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::crd::{
-    AutoscalingConfig, Condition, IngressConfig, NodeType, StellarNode, StellarNodeStatus, StellarNodeStatus,
+    Condition, NodeType, StellarNode, StellarNodeStatus,
 };
 use crate::error::{Error, Result};
 
@@ -155,7 +155,7 @@ async fn apply_stellar_node(client: &Client, node: &StellarNode) -> Result<Actio
     // Validate the spec
     if let Err(e) = node.spec.validate() {
         warn!("Validation failed for {}/{}: {}", namespace, name, e);
-        update_status(client, node, "Failed", Some(&e), 0, true).await?;
+        update_status(client, node, "Failed", Some(e.as_str()), 0, true).await?;
         return Err(Error::ValidationError(e));
     }
 
@@ -457,6 +457,20 @@ async fn apply_stellar_node(client: &Client, node: &StellarNode) -> Result<Actio
                 node.spec.network.passphrase(),
                 seq,
             );
+
+            // Calculate ingestion lag if we can get the latest network ledger
+            // For now we assume we have a way to track the "latest" known ledger across the cluster
+            // or fetch it from a public horizon.
+            if let Some(network_latest) = get_latest_network_ledger(&node.spec.network).await.ok() {
+                let lag = (network_latest as i64) - (seq as i64);
+                metrics::set_ingestion_lag(
+                    &namespace,
+                    &name,
+                    &node.spec.node_type.to_string(),
+                    node.spec.network.passphrase(),
+                    lag.max(0),
+                );
+            }
         }
     }
 
@@ -806,6 +820,23 @@ async fn update_status_with_health(
     .map_err(Error::KubeError)?;
 
     Ok(())
+}
+
+/// Helper to get the latest ledger from the Stellar network
+async fn get_latest_network_ledger(network: &crate::crd::StellarNetwork) -> Result<u64> {
+    let url = match network {
+        crate::crd::StellarNetwork::Mainnet => "https://horizon.stellar.org",
+        crate::crd::StellarNetwork::Testnet => "https://horizon-testnet.stellar.org",
+        crate::crd::StellarNetwork::Futurenet => "https://horizon-futurenet.stellar.org",
+        crate::crd::StellarNetwork::Custom(_) => return Err(Error::ConfigError("Custom network not supported for lag calculation yet".to_string())),
+    };
+
+    let client = reqwest::Client::new();
+    let resp = client.get(url).send().await.map_err(Error::HttpError)?;
+    let json: serde_json::Value = resp.json().await.map_err(|e| Error::ConfigError(e.to_string()))?;
+    
+    let ledger = json["history_latest_ledger"].as_u64().ok_or_else(|| Error::ConfigError("Failed to get latest ledger from horizon".to_string()))?;
+    Ok(ledger)
 }
 
 /// Error policy determines how to handle reconciliation errors
