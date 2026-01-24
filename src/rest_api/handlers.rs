@@ -8,14 +8,17 @@ use axum::{
     Json,
 };
 use kube::{api::Api, ResourceExt};
-use tracing::error;
+use tracing::{error, instrument};
 
 use crate::controller::ControllerState;
 use crate::crd::StellarNode;
 
-use super::dto::{ErrorResponse, HealthResponse, NodeDetailResponse, NodeListResponse, NodeSummary};
+use super::dto::{
+    ErrorResponse, HealthResponse, NodeDetailResponse, NodeListResponse, NodeSummary,
+};
 
 /// Health check endpoint
+#[instrument]
 pub async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "healthy".to_string(),
@@ -24,6 +27,7 @@ pub async fn health() -> Json<HealthResponse> {
 }
 
 /// List all StellarNodes
+#[instrument(skip(state))]
 pub async fn list_nodes(
     State(state): State<Arc<ControllerState>>,
 ) -> Result<Json<NodeListResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -45,11 +49,7 @@ pub async fn list_nodes(
                         .map(|s| s.phase.clone())
                         .unwrap_or_else(|| "Unknown".to_string()),
                     replicas: n.spec.replicas,
-                    ready_replicas: n
-                        .status
-                        .as_ref()
-                        .map(|s| s.ready_replicas)
-                        .unwrap_or(0),
+                    ready_replicas: n.status.as_ref().map(|s| s.ready_replicas).unwrap_or(0),
                 })
                 .collect();
 
@@ -67,6 +67,7 @@ pub async fn list_nodes(
 }
 
 /// Get a specific StellarNode
+#[instrument(skip(state), fields(name = %name, namespace = %namespace))]
 pub async fn get_node(
     State(state): State<Arc<ControllerState>>,
     Path((namespace, name)): Path<(String, String)>,

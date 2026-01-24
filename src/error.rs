@@ -43,6 +43,26 @@ pub enum Error {
     /// Missing required field in spec
     #[error("Missing required field: {field} for node type {node_type}")]
     MissingRequiredField { field: String, node_type: String },
+
+    /// History archive health check error
+    #[error("Archive health check failed: {0}")]
+    ArchiveHealthCheckError(String),
+
+    /// HTTP request error (from reqwest)
+    #[error("HTTP request error: {0}")]
+    HttpError(#[from] reqwest::Error),
+
+    /// Remediation action failed
+    #[error("Remediation failed: {0}")]
+    RemediationError(String),
+
+    /// Wasm plugin error
+    #[error("Plugin error: {0}")]
+    PluginError(String),
+
+    /// Webhook server error
+    #[error("Webhook error: {0}")]
+    WebhookError(String),
 }
 
 /// Result type alias for operator operations
@@ -53,7 +73,7 @@ impl Error {
     pub fn is_retriable(&self) -> bool {
         matches!(
             self,
-            Error::KubeError(_) | Error::FinalizerError(_)
+            Error::KubeError(_) | Error::FinalizerError(_) | Error::RemediationError(_)
         )
     }
 
@@ -65,6 +85,13 @@ impl Error {
             Error::MissingRequiredField { field, node_type } => {
                 format!("Missing {} for {} node", field, node_type)
             }
+            Error::ArchiveHealthCheckError(msg) => {
+                format!("Archive health check failed: {}", msg)
+            }
+            Error::HttpError(e) => format!("HTTP request failed: {}", e),
+            Error::RemediationError(msg) => format!("Remediation failed: {}", msg),
+            Error::PluginError(msg) => format!("Plugin error: {}", msg),
+            Error::WebhookError(msg) => format!("Webhook error: {}", msg),
             _ => self.to_string(),
         }
     }
