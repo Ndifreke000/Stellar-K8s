@@ -326,7 +326,7 @@ async fn status(
         "json" => {
             let mut results = Vec::new();
             for node in nodes {
-                let health_result = check_node_health(client, &node).await?;
+                let health_result = check_node_health(client, &node, None).await?;
                 results.push(serde_json::json!({
                     "name": node.name_any(),
                     "namespace": node.namespace().unwrap_or_else(|| "default".to_string()),
@@ -344,7 +344,7 @@ async fn status(
         "yaml" => {
             let mut results = Vec::new();
             for node in nodes {
-                let health_result = check_node_health(client, &node).await?;
+                let health_result = check_node_health(client, &node, None).await?;
                 results.push(serde_json::json!({
                     "name": node.name_any(),
                     "namespace": node.namespace().unwrap_or_else(|| "default".to_string()),
@@ -372,7 +372,7 @@ async fn status(
             }
 
             for node in nodes {
-                let health_result = check_node_health(client, &node).await?;
+                let health_result = check_node_health(client, &node, None).await?;
                 let name = node.name_any();
                 let node_type = format!("{:?}", node.spec.node_type);
                 let phase = node.status.as_ref().map(|s| s.phase.clone()).unwrap_or_else(|| "Unknown".to_string());
