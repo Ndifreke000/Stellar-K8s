@@ -60,7 +60,7 @@ tower-http = { version = "0.5", features = ["trace"], optional = true }
 
 # Metrics
 prometheus-client = { version = "0.22", optional = true }
-once_cell = { version = "1.19", optional = true }
+once_cell = { version = "1", optional = true }
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 rustls-pemfile = "2.2.0"
 rcgen = "0.11"
