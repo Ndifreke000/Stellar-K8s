@@ -81,6 +81,27 @@ kubectl apply -f validator.yaml
 kubectl get stellarnodes -n stellar
 ```
 
+### 3. Use the kubectl-stellar Plugin
+
+The project includes a kubectl plugin for convenient interaction with StellarNode resources:
+
+```bash
+# Build the plugin
+cargo build --release --bin kubectl-stellar
+cp target/release/kubectl-stellar ~/.local/bin/kubectl-stellar
+
+# List all StellarNode resources
+kubectl stellar list
+
+# Check sync status
+kubectl stellar status
+
+# View logs from a node
+kubectl stellar logs my-validator -f
+```
+
+See [kubectl-plugin.md](docs/kubectl-plugin.md) for complete documentation.
+
 ---
 
 ## 🤝 Contributing
@@ -97,6 +118,7 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 - [x] Helm Chart for easy deployment
 - [x] CI/CD Pipeline with GitHub Actions and Docker builds
 - [x] Auto-Sync Health Checks for Horizon and Soroban RPC nodes
+- [x] kubectl-stellar plugin for node management
 
 ### Phase 2: Soroban & Observability (Month 2)
 - [ ] Full Soroban RPC node support with captive core
