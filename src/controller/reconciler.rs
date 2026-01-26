@@ -52,6 +52,8 @@ use super::finalizers::STELLAR_NODE_FINALIZER;
 use super::health;
 #[cfg(feature = "metrics")]
 use super::metrics;
+#[cfg(feature = "metrics")]
+use super::metrics;
 use super::mtls;
 use super::peer_discovery;
 use super::remediation;
@@ -686,7 +688,6 @@ async fn apply_stellar_node(
                 resources::ensure_service_monitor(client, node).await?;
                 resources::ensure_hpa(client, node).await?;
             }
-            resources::ensure_pdb(client, node).await?;
             resources::ensure_alerting(client, node).await?;
             resources::ensure_network_policy(client, node).await?;
             Ok(())
