@@ -184,6 +184,14 @@ pub struct StellarNodeSpec {
     pub topology_spread_constraints:
         Option<Vec<k8s_openapi::api::core::v1::TopologySpreadConstraint>>,
 
+    /// Load Balancer configuration for external access via MetalLB
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_balancer: Option<LoadBalancerConfig>,
+
+    /// Global node discovery configuration for Stellar network peering
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub global_discovery: Option<GlobalDiscoveryConfig>,
+
     /// Cluster identifier for multi-cluster deployments
     /// Used to identify which cluster this node belongs to for cross-cluster communication
     /// Example: "us-east-1", "eu-west-1", "ap-south-1"
@@ -241,8 +249,6 @@ impl StellarNodeSpec {
     /// # network_policy: None,
     /// # dr_config: None,
     /// # topology_spread_constraints: None,
-    /// # min_available: None,
-    /// # max_unavailable: None,
     /// # load_balancer: None,
     /// # global_discovery: None,
     /// # cluster: None,
@@ -387,20 +393,14 @@ impl StellarNodeSpec {
         }
 
         // Validate load balancer configuration (all node types)
-        // TODO: load_balancer field not yet implemented in StellarNodeSpec
-        /*
         if let Some(lb) = &self.load_balancer {
             validate_load_balancer(lb, &mut errors);
         }
-        */
 
         // Validate global discovery configuration
-        // TODO: global_discovery field not yet implemented in StellarNodeSpec
-        /*
         if let Some(gd) = &self.global_discovery {
             validate_global_discovery(gd, &mut errors);
         }
-        */
 
         // Validate cross-cluster configuration
         if let Some(cc) = &self.cross_cluster {
@@ -453,8 +453,6 @@ impl StellarNodeSpec {
     /// # network_policy: None,
     /// # dr_config: None,
     /// # topology_spread_constraints: None,
-    /// # min_available: None,
-    /// # max_unavailable: None,
     /// # load_balancer: None,
     /// # global_discovery: None,
     /// # cluster: None,
@@ -512,8 +510,6 @@ impl StellarNodeSpec {
     /// # network_policy: None,
     /// # dr_config: None,
     /// # topology_spread_constraints: None,
-    /// # min_available: None,
-    /// # max_unavailable: None,
     /// # load_balancer: None,
     /// # global_discovery: None,
     /// # cluster: None,
@@ -1099,6 +1095,8 @@ mod tests {
             network_policy: None,
             dr_config: None,
             topology_spread_constraints: None,
+            load_balancer: None,
+            global_discovery: None,
             cluster: None,
             cross_cluster: None,
         };
@@ -1140,6 +1138,8 @@ mod tests {
             network_policy: None,
             dr_config: None,
             topology_spread_constraints: None,
+            load_balancer: None,
+            global_discovery: None,
             cluster: None,
             cross_cluster: None,
         };

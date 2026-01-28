@@ -67,6 +67,7 @@ pub enum Error {
     /// Network connectivity error
     #[error("Network error: {0}")]
     NetworkError(String),
+
     /// Certificate generation error
     #[error("Certificate error: {0}")]
     CertificateError(#[from] rcgen::Error),

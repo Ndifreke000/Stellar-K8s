@@ -107,6 +107,7 @@ pub struct ControllerState {
 ///         enable_mtls: false,
 ///         mtls_config: None,
 ///         operator_namespace: "stellar-operator".to_string(),
+///         dry_run: false,
 ///     });
 ///     run_controller(state).await?;
 ///     Ok(())
@@ -206,7 +207,6 @@ async fn emit_spec_validation_event(
 ) -> Result<()> {
     let message = format_spec_validation_errors(errors);
     emit_event(client, node, "Warning", "SpecValidationFailed", &message).await
-}
 /// Action types for apply_or_emit helper
 #[derive(Debug, Clone, Copy)]
 pub enum ActionType {
@@ -627,8 +627,7 @@ async fn apply_stellar_node(
                             if let Some(cv) = get_current_deployment_version(client, node).await? {
                                 stable_node.spec.version = cv;
                             }
-                            resources::ensure_deployment(client, &stable_node, ctx.enable_mtls)
-                                .await?;
+                            resources::ensure_deployment(client, &stable_node, ctx.enable_mtls).await?;
                         } else {
                             resources::ensure_deployment(client, node, ctx.enable_mtls).await?;
                         }
@@ -651,9 +650,8 @@ async fn apply_stellar_node(
         ctx,
         node,
         ActionType::Update,
-        "Service, Ingress, and PDB",
+        "Service and Ingress",
         async {
-            resources::ensure_pdb(client, node).await?;
             resources::ensure_service(client, node, ctx.enable_mtls).await?;
             resources::ensure_ingress(client, node).await?;
             Ok(())
@@ -831,6 +829,7 @@ async fn apply_stellar_node(
 
     // 10. Update ledger sequence metric if available
     if let Some(ref status) = node.status {
+        #[cfg(feature = "metrics")]
         if let Some(seq) = status.ledger_sequence {
             metrics::set_ledger_sequence(
                 &namespace,
@@ -918,6 +917,33 @@ async fn cleanup_stellar_node(
     apply_or_emit(ctx, node, ActionType::Delete, "NetworkPolicy", async {
         if let Err(e) = resources::delete_network_policy(client, node).await {
             warn!("Failed to delete NetworkPolicy: {:?}", e);
+        }
+        Ok(())
+    })
+    .await?;
+
+    // 3b. Delete MetalLB LoadBalancer Service
+    apply_or_emit(
+        ctx,
+        node,
+        ActionType::Delete,
+        "MetalLB LoadBalancer",
+        async {
+            if let Err(e) = resources::delete_load_balancer_service(client, node).await {
+                warn!("Failed to delete MetalLB LoadBalancer service: {:?}", e);
+            }
+            if let Err(e) = resources::delete_metallb_config(client, node).await {
+                warn!("Failed to delete MetalLB configuration: {:?}", e);
+            }
+            Ok(())
+        },
+    )
+    .await?;
+
+    // 3c. Delete PDB
+    apply_or_emit(ctx, node, ActionType::Delete, "PDB", async {
+        if let Err(e) = resources::delete_pdb(client, node).await {
+            warn!("Failed to delete PodDisruptionBudget: {:?}", e);
         }
         Ok(())
     })
