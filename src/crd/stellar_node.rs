@@ -3,14 +3,17 @@
 //! The StellarNode CRD represents a managed Stellar infrastructure node.
 //! Supports Validator (Core), Horizon API, and Soroban RPC node types.
 
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::types::{
-    AutoscalingConfig, Condition, ExternalDatabaseConfig, GlobalDiscoveryConfig, HorizonConfig,
+    AutoscalingConfig, Condition, CrossClusterConfig, DisasterRecoveryConfig,
+    DisasterRecoveryStatus, ExternalDatabaseConfig, GlobalDiscoveryConfig, HorizonConfig,
     IngressConfig, LoadBalancerConfig, NetworkPolicyConfig, NodeType, ResourceRequirements,
-    RetentionPolicy, SorobanConfig, StellarNetwork, StorageConfig, ValidatorConfig,
+    RetentionPolicy, RolloutStrategy, SorobanConfig, StellarNetwork, StorageConfig,
+    ValidatorConfig,
 };
 
 /// The StellarNode CRD represents a managed Stellar infrastructure node.
@@ -96,6 +99,18 @@ pub struct StellarNodeSpec {
     #[serde(default = "default_replicas")]
     pub replicas: i32,
 
+    /// Minimum available replicas during disruptions.
+    /// Only applicable for Horizon and SorobanRpc nodes with replicas > 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<serde_json::Value>")] // Add this line
+    pub min_available: Option<IntOrString>,
+
+    /// Maximum unavailable replicas during disruptions.
+    /// Only applicable for Horizon and SorobanRpc nodes with replicas > 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<serde_json::Value>")] // Add this line
+    pub max_unavailable: Option<IntOrString>,
+
     /// Suspend the node (scale to 0 without deleting resources)
     /// The operator still manages the resources, but keeps them inactive.
     #[serde(default)]
@@ -121,19 +136,39 @@ pub struct StellarNodeSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ingress: Option<IngressConfig>,
 
+    /// Rollout strategy for updates (RollingUpdate or Canary)
+    #[serde(default)]
+    pub strategy: RolloutStrategy,
+
     /// Maintenance mode (skips workload updates)
     #[serde(default)]
     pub maintenance_mode: bool,
+
     /// Network Policy configuration for restricting ingress traffic
     /// When enabled, creates a deny-all policy with explicit allow rules
     /// for peer-to-peer (Validators), API access (Horizon/Soroban), and metrics
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network_policy: Option<NetworkPolicyConfig>,
 
+    /// Configuration for cross-region multi-cluster disaster recovery (DR)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dr_config: Option<DisasterRecoveryConfig>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "serde_json::Value")]
     pub topology_spread_constraints:
         Option<Vec<k8s_openapi::api::core::v1::TopologySpreadConstraint>>,
+
+    /// Cluster identifier for multi-cluster deployments
+    /// Used to identify which cluster this node belongs to for cross-cluster communication
+    /// Example: "us-east-1", "eu-west-1", "ap-south-1"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cluster: Option<String>,
+
+    /// Cross-cluster communication configuration
+    /// Enables service mesh or ExternalName services for multi-cluster networking
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cross_cluster: Option<CrossClusterConfig>,
 }
 
 fn default_replicas() -> i32 {
@@ -169,12 +204,20 @@ impl StellarNodeSpec {
     /// # horizon_config: None,
     /// # soroban_config: None,
     /// # replicas: 1,
+    /// # min_available: None,
+    /// # max_unavailable: None,
     /// # suspended: false,
     /// # alerting: false,
     /// # database: None,
     /// # autoscaling: None,
     /// # ingress: None,
+    /// # strategy: Default::default(),
+    /// # maintenance_mode: false,
     /// # network_policy: None,
+    /// # dr_config: None,
+    /// # topology_spread_constraints: None,
+    /// # cluster: None,
+    /// # cross_cluster: None,
     /// };
     /// match spec.validate() {
     ///     Ok(_) => println!("Valid spec"),
@@ -182,6 +225,12 @@ impl StellarNodeSpec {
     /// }
     /// ```
     pub fn validate(&self) -> Result<(), String> {
+        if self.min_available.is_some() && self.max_unavailable.is_some() {
+            return Err(
+                "Cannot specify both minAvailable and maxUnavailable in PDB configuration"
+                    .to_string(),
+            );
+        }
         match self.node_type {
             NodeType::Validator => {
                 if self.validator_config.is_none() {
@@ -198,11 +247,17 @@ impl StellarNodeSpec {
                 if self.replicas != 1 {
                     return Err("Validator nodes must have exactly 1 replica".to_string());
                 }
+                if self.min_available.is_some() || self.max_unavailable.is_some() {
+                    return Err("PDB configuration is not supported for Validator nodes (replicas must be 1)".to_string());
+                }
                 if self.autoscaling.is_some() {
                     return Err("autoscaling is not supported for Validator nodes".to_string());
                 }
                 if self.ingress.is_some() {
                     return Err("ingress is not supported for Validator nodes".to_string());
+                }
+                if matches!(self.strategy, RolloutStrategy::Canary(_)) {
+                    return Err("Canary rollout is not supported for Validator nodes".to_string());
                 }
             }
             NodeType::Horizon => {
@@ -255,6 +310,11 @@ impl StellarNodeSpec {
         }
         */
 
+        // Validate cross-cluster configuration
+        if let Some(cc) = &self.cross_cluster {
+            validate_cross_cluster(cc)?;
+        }
+
         Ok(())
     }
 
@@ -285,12 +345,20 @@ impl StellarNodeSpec {
     /// # horizon_config: None,
     /// # soroban_config: None,
     /// # replicas: 1,
+    /// # min_available: None,
+    /// # max_unavailable: None,
     /// # suspended: false,
     /// # alerting: false,
     /// # database: None,
     /// # autoscaling: None,
     /// # ingress: None,
+    /// # strategy: Default::default(),
+    /// # maintenance_mode: false,
     /// # network_policy: None,
+    /// # dr_config: None,
+    /// # topology_spread_constraints: None,
+    /// # cluster: None,
+    /// # cross_cluster: None,
     /// };
     /// assert_eq!(spec.container_image(), "stellar/stellar-core:v21.0.0");
     /// ```
@@ -332,12 +400,20 @@ impl StellarNodeSpec {
     /// # horizon_config: None,
     /// # soroban_config: None,
     /// # replicas: 1,
+    /// # min_available: None,
+    /// # max_unavailable: None,
     /// # suspended: false,
     /// # alerting: false,
     /// # database: None,
     /// # autoscaling: None,
     /// # ingress: None,
+    /// # strategy: Default::default(),
+    /// # maintenance_mode: false,
     /// # network_policy: None,
+    /// # dr_config: None,
+    /// # topology_spread_constraints: None,
+    /// # cluster: None,
+    /// # cross_cluster: None,
     /// };
     /// assert!(spec.should_delete_pvc());
     /// ```
@@ -377,6 +453,7 @@ fn validate_ingress(ingress: &IngressConfig) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn validate_load_balancer(lb: &LoadBalancerConfig) -> Result<(), String> {
     use super::types::LoadBalancerMode;
 
@@ -424,6 +501,7 @@ fn validate_load_balancer(lb: &LoadBalancerConfig) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn validate_global_discovery(gd: &GlobalDiscoveryConfig) -> Result<(), String> {
     if !gd.enabled {
         return Ok(());
@@ -436,6 +514,126 @@ fn validate_global_discovery(gd: &GlobalDiscoveryConfig) -> Result<(), String> {
         }
         if dns.ttl == 0 {
             return Err("globalDiscovery.externalDns.ttl must be greater than 0".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn validate_cross_cluster(cc: &CrossClusterConfig) -> Result<(), String> {
+    use super::types::{CrossClusterMeshType, CrossClusterMode};
+
+    if !cc.enabled {
+        return Ok(());
+    }
+
+    // Validate service mesh configuration
+    if cc.mode == CrossClusterMode::ServiceMesh {
+        if let Some(mesh) = &cc.service_mesh {
+            if mesh.cluster_set_id.is_none()
+                && (mesh.mesh_type == CrossClusterMeshType::Submariner
+                    || mesh.mesh_type == CrossClusterMeshType::Istio)
+            {
+                return Err(
+                    "crossCluster.serviceMesh.clusterSetId is required for Submariner and Istio"
+                        .to_string(),
+                );
+            }
+        } else {
+            return Err(
+                "crossCluster.serviceMesh configuration is required when mode is ServiceMesh"
+                    .to_string(),
+            );
+        }
+    }
+
+    // Validate ExternalName configuration
+    if cc.mode == CrossClusterMode::ExternalName {
+        if let Some(ext) = &cc.external_name {
+            if ext.external_dns_name.trim().is_empty() {
+                return Err(
+                    "crossCluster.externalName.externalDnsName must not be empty".to_string(),
+                );
+            }
+        } else {
+            return Err(
+                "crossCluster.externalName configuration is required when mode is ExternalName"
+                    .to_string(),
+            );
+        }
+    }
+
+    // Validate peer clusters
+    for (i, peer) in cc.peer_clusters.iter().enumerate() {
+        if peer.cluster_id.trim().is_empty() {
+            return Err(format!(
+                "crossCluster.peerClusters[{}].clusterId must not be empty",
+                i
+            ));
+        }
+        if peer.endpoint.trim().is_empty() {
+            return Err(format!(
+                "crossCluster.peerClusters[{}].endpoint must not be empty",
+                i
+            ));
+        }
+        if let Some(threshold) = peer.latency_threshold_ms {
+            if threshold == 0 {
+                return Err(format!(
+                    "crossCluster.peerClusters[{}].latencyThresholdMs must be greater than 0",
+                    i
+                ));
+            }
+        }
+    }
+
+    // Validate latency threshold
+    if cc.latency_threshold_ms == 0 {
+        return Err("crossCluster.latencyThresholdMs must be greater than 0".to_string());
+    }
+
+    // Validate health check configuration
+    if let Some(hc) = &cc.health_check {
+        if hc.enabled {
+            if hc.interval_seconds == 0 {
+                return Err(
+                    "crossCluster.healthCheck.intervalSeconds must be greater than 0".to_string(),
+                );
+            }
+            if hc.timeout_seconds == 0 {
+                return Err(
+                    "crossCluster.healthCheck.timeoutSeconds must be greater than 0".to_string(),
+                );
+            }
+            if hc.timeout_seconds >= hc.interval_seconds {
+                return Err(
+                    "crossCluster.healthCheck.timeoutSeconds must be less than intervalSeconds"
+                        .to_string(),
+                );
+            }
+            if hc.failure_threshold == 0 {
+                return Err(
+                    "crossCluster.healthCheck.failureThreshold must be greater than 0".to_string(),
+                );
+            }
+            if hc.success_threshold == 0 {
+                return Err(
+                    "crossCluster.healthCheck.successThreshold must be greater than 0".to_string(),
+                );
+            }
+
+            // Validate latency measurement
+            if let Some(lm) = &hc.latency_measurement {
+                if lm.enabled {
+                    if lm.sample_count == 0 {
+                        return Err("crossCluster.healthCheck.latencyMeasurement.sampleCount must be greater than 0".to_string());
+                    }
+                    if lm.percentile == 0 || lm.percentile > 100 {
+                        return Err("crossCluster.healthCheck.latencyMeasurement.percentile must be between 1 and 100".to_string());
+                    }
+                }
+            }
         }
     }
 
@@ -480,6 +678,10 @@ pub struct StellarNodeStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
 
+    /// Status of the cross-region disaster recovery setup (if enabled)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dr_status: Option<DisasterRecoveryStatus>,
+
     /// Readiness conditions following Kubernetes conventions
     ///
     /// Standard conditions include:
@@ -512,6 +714,18 @@ pub struct StellarNodeStatus {
     /// Total number of desired replicas
     #[serde(default)]
     pub replicas: i32,
+
+    /// Current number of ready canary replicas (for canary deployments)
+    #[serde(default)]
+    pub canary_ready_replicas: i32,
+
+    /// Version deployed in the canary deployment (if active)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_version: Option<String>,
+
+    /// Version of the database schema after last successful migration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_migrated_version: Option<String>,
 }
 
 /// BGP advertisement status information
@@ -536,7 +750,6 @@ pub struct BGPStatus {
 impl StellarNodeStatus {
     /// Create a new status with the given phase
     ///
-
     /// Initializes a StellarNodeStatus with the provided phase and all other fields
     /// set to their defaults (empty message, no conditions, etc.).
     ///
@@ -549,10 +762,9 @@ impl StellarNodeStatus {
     /// assert_eq!(status.phase, "Creating");
     /// assert_eq!(status.message, None);
     /// ```
-
     /// DEPRECATED: Use `with_conditions` instead
     #[deprecated(since = "0.2.0", note = "Use with_conditions instead")]
-
+    #[allow(deprecated)]
     pub fn with_phase(phase: &str) -> Self {
         Self {
             phase: phase.to_string(),
@@ -562,7 +774,6 @@ impl StellarNodeStatus {
 
     /// Update the phase and message
     ///
-
     /// Updates both the phase and message fields atomically.
     /// This is typically called during reconciliation to report progress.
     ///
@@ -581,16 +792,15 @@ impl StellarNodeStatus {
     /// assert_eq!(status.phase, "Ready");
     /// assert_eq!(status.message, Some("Node is fully synced".to_string()));
     /// ```
-
     /// DEPRECATED: Use condition helpers instead
+    #[allow(deprecated)]
     #[deprecated(since = "0.2.0", note = "Use set_condition helpers instead")]
-
+    #[allow(deprecated)]
     pub fn update(&mut self, phase: &str, message: Option<&str>) {
         self.phase = phase.to_string();
         self.message = message.map(String::from);
     }
-
-
+    #[allow(clippy::empty_line_after_doc_comments)]
     /// Check if the node is ready
     ///
     /// Returns true only if both:
@@ -614,13 +824,11 @@ impl StellarNodeStatus {
     /// status.ready_replicas = 0;
     /// assert!(!status.is_ready());
     /// ```
-
     /// Check if the node is ready based on conditions
     ///
     /// A node is considered ready when:
     /// - Ready condition is True
     /// - ready_replicas >= replicas (all replicas are ready)
-
     pub fn is_ready(&self) -> bool {
         let has_ready_condition = self
             .conditions
@@ -676,5 +884,100 @@ impl StellarNodeStatus {
                 "Pending".to_string()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crd::types::{CanaryConfig, RolloutStrategy};
+
+    #[test]
+    fn test_validator_with_canary_should_fail() {
+        let spec = StellarNodeSpec {
+            node_type: NodeType::Validator,
+            network: StellarNetwork::Testnet,
+            version: "v21.0.0".to_string(),
+            resources: Default::default(),
+            storage: Default::default(),
+            validator_config: Some(ValidatorConfig {
+                seed_secret_ref: "test".to_string(),
+                quorum_set: None,
+                enable_history_archive: false,
+                history_archive_urls: vec![],
+                catchup_complete: false,
+                key_source: Default::default(),
+                kms_config: None,
+                vl_source: None,
+                hsm_config: None,
+            }),
+            horizon_config: None,
+            soroban_config: None,
+            replicas: 1,
+            min_available: None,
+            max_unavailable: None,
+            suspended: false,
+            alerting: false,
+            database: None,
+            autoscaling: None,
+            ingress: None,
+            strategy: RolloutStrategy::Canary(CanaryConfig {
+                weight: 10,
+                check_interval_seconds: 300,
+            }),
+            maintenance_mode: false,
+            network_policy: None,
+            dr_config: None,
+            topology_spread_constraints: None,
+            cluster: None,
+            cross_cluster: None,
+        };
+
+        assert!(spec.validate().is_err());
+        assert_eq!(
+            spec.validate().unwrap_err(),
+            "Canary rollout is not supported for Validator nodes"
+        );
+    }
+
+    #[test]
+    fn test_horizon_with_canary_should_pass() {
+        let spec = StellarNodeSpec {
+            node_type: NodeType::Horizon,
+            network: StellarNetwork::Testnet,
+            version: "v21.0.0".to_string(),
+            resources: Default::default(),
+            storage: Default::default(),
+            validator_config: None,
+            horizon_config: Some(HorizonConfig {
+                database_secret_ref: "test".to_string(),
+                enable_ingest: true,
+                stellar_core_url: "http://core".to_string(),
+                ingest_workers: 1,
+                enable_experimental_ingestion: false,
+                auto_migration: false,
+            }),
+            soroban_config: None,
+            replicas: 3,
+            min_available: None,
+            max_unavailable: None,
+            suspended: false,
+            alerting: false,
+            database: None,
+            autoscaling: None,
+            ingress: None,
+            strategy: RolloutStrategy::Canary(CanaryConfig {
+                weight: 20,
+                check_interval_seconds: 300,
+            }),
+            maintenance_mode: false,
+            network_policy: None,
+            dr_config: None,
+            topology_spread_constraints: None,
+            cluster: None,
+            cross_cluster: None,
+        };
+
+        assert!(spec.validate().is_ok());
     }
 }

@@ -19,22 +19,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Supported Stellar node types
-///
-/// Determines which Stellar service is deployed (Stellar Core, Horizon API, or Soroban RPC).
-/// Each type has different resource requirements, network roles, and configuration options.
-///
-/// # Examples
-///
-/// ```rust,no_run
-/// use stellar_k8s::crd::NodeType;
-///
-/// let node_type = NodeType::Validator;
-/// println!("Deploying {} node", node_type);
-/// ```
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum NodeType {
     /// Full validator node running Stellar Core
     /// Participates in consensus and validates transactions
+    #[default]
     Validator,
 
     /// Horizon API server for REST access to the Stellar network
@@ -70,11 +59,12 @@ impl std::fmt::Display for NodeType {
 /// let passphrase = network.passphrase();
 /// assert_eq!(passphrase, "Test SDF Network ; September 2015");
 /// ```
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub enum StellarNetwork {
     /// Stellar public mainnet
     Mainnet,
     /// Stellar testnet for testing
+    #[default]
     Testnet,
     /// Futurenet for bleeding-edge features
     Futurenet,
@@ -144,6 +134,15 @@ pub struct ResourceSpec {
     pub cpu: String,
     /// Memory (e.g., "1Gi", "4Gi")
     pub memory: String,
+}
+
+impl Default for ResourceSpec {
+    fn default() -> Self {
+        Self {
+            cpu: "500m".to_string(),
+            memory: "1Gi".to_string(),
+        }
+    }
 }
 
 /// Storage configuration for persistent data
@@ -230,6 +229,8 @@ pub enum RetentionPolicy {
 ///     catchup_complete: false,
 ///     key_source: KeySource::Secret,
 ///     kms_config: None,
+///     vl_source: None,
+///     hsm_config: None,
 /// };
 /// ```
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -258,6 +259,39 @@ pub struct ValidatorConfig {
     /// Trusted source for Validator Selection List (VSL)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vl_source: Option<String>,
+    /// Cloud HSM configuration for secure key loading (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hsm_config: Option<HsmConfig>,
+}
+
+/// Configuration for Hardware Security Module (HSM) integration
+///
+/// Enables validators to use keys stored in Cloud HSMs (AWS CloudHSM, Azure Dedicated HSM)
+/// via PKCS#11, ensuring private keys never leave the secure hardware.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HsmConfig {
+    /// Cloud provider for the HSM service
+    pub provider: HsmProvider,
+    /// Path to the PKCS#11 library within the container
+    /// Default: "/opt/cloudhsm/lib/libcloudhsm_pkcs11.so" for AWS
+    pub pkcs11_lib_path: String,
+    /// IP address of the HSM device (Required for Azure/Network HSMs)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hsm_ip: Option<String>,
+    /// Secret containing HSM credentials (PIN/Password)
+    /// The secret must have a key 'HSM_PIN' or 'HSM_PASSWORD'
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hsm_credentials_secret_ref: Option<String>,
+}
+
+/// Supported HSM Providers
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub enum HsmProvider {
+    /// AWS CloudHSM (requires cloudhsm-client sidecar)
+    AWS,
+    /// Azure Dedicated HSM (network-based)
+    Azure,
 }
 
 /// Source of security keys
@@ -329,6 +363,7 @@ pub struct KmsConfig {
 ///     stellar_core_url: "http://core.default:11626".to_string(),
 ///     ingest_workers: 4,
 ///     enable_experimental_ingestion: false,
+///     auto_migration: true,
 /// };
 /// ```
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -347,6 +382,9 @@ pub struct HorizonConfig {
     /// Enable experimental features
     #[serde(default)]
     pub enable_experimental_ingestion: bool,
+    /// Automatically run database migrations on startup or upgrade
+    #[serde(default = "default_true")]
+    pub auto_migration: bool,
 }
 
 fn default_true() -> bool {
@@ -391,7 +429,7 @@ pub struct SorobanConfig {
 }
 
 /// External database configuration for managed Postgres databases
-/// 
+///
 /// Specifies how to reference database credentials for external managed databases.
 /// Supports AWS RDS, Google Cloud SQL, CockroachDB, and other managed services.
 ///
@@ -743,6 +781,38 @@ impl Default for NetworkPolicyConfig {
             metrics_namespace: default_monitoring_namespace(),
         }
     }
+}
+
+/// Rollout strategy for updates
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RolloutStrategy {
+    /// Standard Kubernetes rolling update
+    #[default]
+    RollingUpdate,
+    /// Canary deployment with traffic weighting
+    Canary(CanaryConfig),
+}
+
+/// Configuration for Canary rollout
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CanaryConfig {
+    /// Percentage of traffic to route to the canary (0-100)
+    #[serde(default = "default_canary_weight")]
+    pub weight: i32,
+
+    /// Interval in seconds to wait before increasing weight or finalizing (e.g., 300)
+    #[serde(default = "default_canary_interval")]
+    pub check_interval_seconds: i32,
+}
+
+fn default_canary_weight() -> i32 {
+    10
+}
+
+fn default_canary_interval() -> i32 {
+    300
 }
 
 // ============================================================================
@@ -1107,7 +1177,7 @@ pub enum MTLSMode {
 }
 
 /// ExternalDNS configuration for automatic DNS record management
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalDNSConfig {
     /// DNS hostname to register (e.g., "stellar-node.example.com")
@@ -1128,4 +1198,403 @@ pub struct ExternalDNSConfig {
 
 fn default_dns_ttl() -> u32 {
     300
+}
+
+// ============================================================================
+// Cross-Region Disaster Recovery Configuration
+// ============================================================================
+
+/// Configuration for multi-cluster disaster recovery (DR)
+///
+/// Manages "hot standby" nodes in remote clusters and automated failover
+/// using external DNS providers (Route53, Cloudflare).
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DisasterRecoveryConfig {
+    /// Whether DR is enabled for this node
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Role of this cluster in the DR pairing
+    pub role: DRRole,
+
+    /// Identifier of the peer cluster/region
+    pub peer_cluster_id: String,
+
+    /// Strategy for state synchronization
+    #[serde(default)]
+    pub sync_strategy: DRSyncStrategy,
+
+    /// DNS failover configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failover_dns: Option<ExternalDNSConfig>,
+
+    /// Check interval for health of the other region (seconds)
+    #[serde(default = "default_dr_check_interval")]
+    pub health_check_interval: u32,
+}
+
+fn default_dr_check_interval() -> u32 {
+    30
+}
+
+/// Role of a node in a DR configuration
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DRRole {
+    /// Primary node serving active traffic
+    Primary,
+    /// Standby node ready to take over if primary fails
+    Standby,
+}
+
+/// Synchronization strategy for hot standby nodes
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DRSyncStrategy {
+    /// Follow the network consensus normally
+    #[default]
+    Consensus,
+    /// Actively track the peer node's ledger sequence
+    PeerTracking,
+    /// Continuous history archive sync
+    ArchiveSync,
+}
+
+/// Status of the Disaster Recovery setup
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DisasterRecoveryStatus {
+    /// Current effective role (may differ from spec during failover)
+    pub current_role: Option<DRRole>,
+
+    /// Health status of the peer cluster
+    pub peer_health: Option<String>,
+
+    /// Last time the peer was reachable
+    pub last_peer_contact: Option<String>,
+
+    /// Sync lag between primary and standby (in ledgers)
+    pub sync_lag: Option<u64>,
+
+    /// Whether failover is currently active
+    pub failover_active: bool,
+}
+
+// ============================================================================
+// Cross-Cluster Communication Configuration
+// ============================================================================
+
+/// Configuration for cross-cluster communication and synchronization
+///
+/// Enables Stellar nodes to communicate across multiple Kubernetes clusters
+/// using service mesh (Submariner, Istio multi-cluster) or ExternalName services.
+///
+/// # Example (Submariner)
+///
+/// ```yaml
+/// crossCluster:
+///   enabled: true
+///   mode: ServiceMesh
+///   serviceMesh:
+///     meshType: submariner
+///     clusterSetId: "stellar-global"
+///   peerClusters:
+///     - clusterId: "us-west-1"
+///       endpoint: "stellar-validator.stellar.svc.clusterset.local"
+///       latencyThresholdMs: 100
+///     - clusterId: "eu-central-1"
+///       endpoint: "stellar-validator.stellar.svc.clusterset.local"
+///       latencyThresholdMs: 150
+/// ```
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CrossClusterConfig {
+    /// Enable cross-cluster communication
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Cross-cluster networking mode
+    #[serde(default)]
+    pub mode: CrossClusterMode,
+
+    /// Service mesh configuration for multi-cluster networking
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_mesh: Option<CrossClusterServiceMeshConfig>,
+
+    /// ExternalName service configuration (alternative to service mesh)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_name: Option<ExternalNameConfig>,
+
+    /// List of peer clusters to communicate with
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peer_clusters: Vec<PeerClusterConfig>,
+
+    /// Global latency threshold in milliseconds
+    /// Nodes exceeding this threshold will be deprioritized
+    #[serde(default = "default_latency_threshold")]
+    pub latency_threshold_ms: u32,
+
+    /// Enable automatic peer discovery across clusters
+    #[serde(default)]
+    pub auto_discovery: bool,
+
+    /// Health check configuration for cross-cluster peers
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health_check: Option<CrossClusterHealthCheck>,
+}
+
+fn default_latency_threshold() -> u32 {
+    200
+}
+
+impl Default for CrossClusterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: CrossClusterMode::default(),
+            service_mesh: None,
+            external_name: None,
+            peer_clusters: Vec::new(),
+            latency_threshold_ms: default_latency_threshold(),
+            auto_discovery: false,
+            health_check: None,
+        }
+    }
+}
+
+/// Cross-cluster networking mode
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CrossClusterMode {
+    /// Use service mesh for cross-cluster communication (Submariner, Istio, etc.)
+    #[default]
+    ServiceMesh,
+    /// Use ExternalName services with external DNS
+    ExternalName,
+    /// Use direct IP addressing with LoadBalancer services
+    DirectIP,
+}
+
+/// Service mesh configuration for cross-cluster networking
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CrossClusterServiceMeshConfig {
+    /// Service mesh type for multi-cluster
+    pub mesh_type: CrossClusterMeshType,
+
+    /// ClusterSet ID for Submariner or Istio multi-cluster
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cluster_set_id: Option<String>,
+
+    /// Enable mTLS for cross-cluster traffic
+    #[serde(default = "default_true")]
+    pub mtls_enabled: bool,
+
+    /// Service export configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_export: Option<ServiceExportConfig>,
+
+    /// Traffic policy for cross-cluster routing
+    #[serde(default)]
+    pub traffic_policy: CrossClusterTrafficPolicy,
+}
+
+/// Supported service mesh types for cross-cluster networking
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CrossClusterMeshType {
+    /// Submariner for multi-cluster networking
+    Submariner,
+    /// Istio multi-cluster mode
+    Istio,
+    /// Linkerd multi-cluster
+    Linkerd,
+    /// Cilium Cluster Mesh
+    Cilium,
+}
+
+/// Service export configuration for multi-cluster service mesh
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceExportConfig {
+    /// Export service to other clusters in the ClusterSet
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Service name to export (defaults to node service name)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_name: Option<String>,
+
+    /// Namespace to export from (defaults to node namespace)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+
+    /// Target clusters to export to (empty = all clusters in ClusterSet)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_clusters: Vec<String>,
+}
+
+/// Traffic policy for cross-cluster routing
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CrossClusterTrafficPolicy {
+    /// Prefer local cluster, fallback to remote
+    #[default]
+    LocalPreferred,
+    /// Distribute traffic across all clusters
+    Global,
+    /// Only route to local cluster
+    LocalOnly,
+    /// Latency-based routing (route to lowest latency cluster)
+    LatencyBased,
+}
+
+/// ExternalName service configuration for cross-cluster DNS
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalNameConfig {
+    /// External DNS name for this service
+    /// Example: "stellar-validator.us-east-1.example.com"
+    pub external_dns_name: String,
+
+    /// DNS provider for external DNS management
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns_provider: Option<String>,
+
+    /// TTL for DNS records in seconds
+    #[serde(default = "default_dns_ttl")]
+    pub ttl: u32,
+
+    /// Create ExternalName services for peer clusters
+    #[serde(default = "default_true")]
+    pub create_external_name_services: bool,
+}
+
+/// Peer cluster configuration
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerClusterConfig {
+    /// Unique identifier for the peer cluster
+    pub cluster_id: String,
+
+    /// Endpoint for reaching the peer cluster
+    /// For ServiceMesh: "service.namespace.svc.clusterset.local"
+    /// For ExternalName: "stellar-node.us-west-1.example.com"
+    /// For DirectIP: "203.0.113.10"
+    pub endpoint: String,
+
+    /// Latency threshold for this specific peer (milliseconds)
+    /// Overrides global latency_threshold_ms if set
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_threshold_ms: Option<u32>,
+
+    /// Geographic region of the peer cluster
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+
+    /// Priority weight for this peer (higher = more preferred)
+    #[serde(default = "default_peer_priority")]
+    pub priority: u32,
+
+    /// Port for peer communication (defaults to 11625 for validators)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+
+    /// Enable this peer for active communication
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_peer_priority() -> u32 {
+    100
+}
+
+/// Health check configuration for cross-cluster peers
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CrossClusterHealthCheck {
+    /// Enable health checks for peer clusters
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Health check interval in seconds
+    #[serde(default = "default_health_check_interval")]
+    pub interval_seconds: u32,
+
+    /// Timeout for health check requests in seconds
+    #[serde(default = "default_health_check_timeout")]
+    pub timeout_seconds: u32,
+
+    /// Number of consecutive failures before marking peer unhealthy
+    #[serde(default = "default_failure_threshold")]
+    pub failure_threshold: u32,
+
+    /// Number of consecutive successes before marking peer healthy
+    #[serde(default = "default_success_threshold")]
+    pub success_threshold: u32,
+
+    /// Latency measurement configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_measurement: Option<LatencyMeasurementConfig>,
+}
+
+fn default_health_check_interval() -> u32 {
+    30
+}
+
+fn default_health_check_timeout() -> u32 {
+    5
+}
+
+fn default_failure_threshold() -> u32 {
+    3
+}
+
+fn default_success_threshold() -> u32 {
+    1
+}
+
+/// Latency measurement configuration
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LatencyMeasurementConfig {
+    /// Enable latency measurements
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Measurement method
+    #[serde(default)]
+    pub method: LatencyMeasurementMethod,
+
+    /// Number of samples to collect for averaging
+    #[serde(default = "default_latency_samples")]
+    pub sample_count: u32,
+
+    /// Percentile to use for latency threshold (e.g., 95 for p95)
+    #[serde(default = "default_latency_percentile")]
+    pub percentile: u8,
+}
+
+fn default_latency_samples() -> u32 {
+    10
+}
+
+fn default_latency_percentile() -> u8 {
+    95
+}
+
+/// Method for measuring cross-cluster latency
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LatencyMeasurementMethod {
+    /// ICMP ping
+    #[default]
+    Ping,
+    /// TCP connection time
+    TCP,
+    /// HTTP request time
+    HTTP,
+    /// gRPC health check
+    GRPC,
 }
