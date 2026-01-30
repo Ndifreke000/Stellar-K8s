@@ -2,11 +2,11 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::crd::CVEHandlingConfig;
     use crate::controller::cve::{
-        CanaryTestStatus, CVECount, CVEDetectionResult, CVERolloutStatus, VulnerabilitySeverity,
-        Vulnerability,
+        CVECount, CVEDetectionResult, CVERolloutStatus, CanaryTestStatus, Vulnerability,
+        VulnerabilitySeverity,
     };
+    use crate::crd::CVEHandlingConfig;
     use chrono::Utc;
 
     #[test]
@@ -25,16 +25,14 @@ mod tests {
     fn test_cve_detection_result_requires_patch() {
         let result_with_critical = CVEDetectionResult {
             current_image: "stellar/core:v21.0.0".to_string(),
-            vulnerabilities: vec![
-                Vulnerability {
-                    cve_id: "CVE-2024-1234".to_string(),
-                    severity: VulnerabilitySeverity::Critical,
-                    package: "openssl".to_string(),
-                    installed_version: "1.0.0".to_string(),
-                    fixed_version: Some("1.0.1".to_string()),
-                    description: "Critical vulnerability in OpenSSL".to_string(),
-                },
-            ],
+            vulnerabilities: vec![Vulnerability {
+                cve_id: "CVE-2024-1234".to_string(),
+                severity: VulnerabilitySeverity::Critical,
+                package: "openssl".to_string(),
+                installed_version: "1.0.0".to_string(),
+                fixed_version: Some("1.0.1".to_string()),
+                description: "Critical vulnerability in OpenSSL".to_string(),
+            }],
             patched_version: Some("stellar/core:v21.0.1".to_string()),
             scan_timestamp: Utc::now(),
             cve_count: CVECount {
@@ -127,7 +125,7 @@ mod tests {
         let config = CVEHandlingConfig {
             enabled: true,
             scan_interval_secs: 1800,      // 30 minutes
-            critical_only: false,           // Patch all levels
+            critical_only: false,          // Patch all levels
             canary_test_timeout_secs: 180, // 3 minutes
             canary_pass_rate_threshold: 100.0,
             enable_auto_rollback: true,

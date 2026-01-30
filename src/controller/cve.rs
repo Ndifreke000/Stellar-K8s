@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
-use crate::crd::{NodeType, StellarNode, CVEHandlingConfig};
+use crate::crd::{CVEHandlingConfig, NodeType, StellarNode};
 use crate::error::{Error, Result};
 
 // Annotation keys for CVE tracking
@@ -435,10 +435,7 @@ impl CanaryTestRunner {
         let namespace = node.namespace().unwrap_or_else(|| "default".to_string());
         let pod_name = canary_pod.name_any();
 
-        info!(
-            "Starting canary tests for pod {}/{}",
-            namespace, pod_name
-        );
+        info!("Starting canary tests for pod {}/{}", namespace, pod_name);
 
         if !Self::is_pod_ready(canary_pod) {
             warn!(
@@ -449,24 +446,18 @@ impl CanaryTestRunner {
         }
 
         match node.spec.node_type {
-            NodeType::Validator => {
-                Self::test_validator_canary(client, node, canary_pod).await
-            }
-            NodeType::Horizon => {
-                Self::test_horizon_canary(client, node, canary_pod).await
-            }
-            NodeType::SorobanRpc => {
-                Self::test_soroban_canary(client, node, canary_pod).await
-            }
+            NodeType::Validator => Self::test_validator_canary(client, node, canary_pod).await,
+            NodeType::Horizon => Self::test_horizon_canary(client, node, canary_pod).await,
+            NodeType::SorobanRpc => Self::test_soroban_canary(client, node, canary_pod).await,
         }
     }
 
     fn is_pod_ready(pod: &Pod) -> bool {
         if let Some(status) = &pod.status {
             if let Some(conditions) = &status.conditions {
-                return conditions.iter().any(|c| {
-                    c.type_ == "Ready" && c.status == "True"
-                });
+                return conditions
+                    .iter()
+                    .any(|c| c.type_ == "Ready" && c.status == "True");
             }
         }
         false
@@ -505,10 +496,7 @@ pub struct ConsensusHealthMonitor;
 
 impl ConsensusHealthMonitor {
     /// Check consensus health metric (0.0 to 1.0, where 1.0 is perfect)
-    pub async fn check_consensus_health(
-        _client: &Client,
-        node: &StellarNode,
-    ) -> Result<f64> {
+    pub async fn check_consensus_health(_client: &Client, node: &StellarNode) -> Result<f64> {
         let namespace = node.namespace().unwrap_or_else(|| "default".to_string());
         debug!(
             "Checking consensus health for {}/{}",
@@ -581,7 +569,7 @@ pub async fn create_canary_deployment(
             if !pod_spec.containers.is_empty() {
                 pod_spec.containers[0].image = Some(patched_image.to_string());
             }
-            
+
             // Add resource limits for canary testing
             for container in pod_spec.containers.iter_mut() {
                 use k8s_openapi::api::core::v1::ResourceRequirements;
@@ -658,11 +646,19 @@ pub async fn trigger_rolling_update(
     );
 
     let mut node_patch = node.clone();
-    node_patch.spec.version = patched_image.split(':').last().unwrap_or("latest").to_string();
+    node_patch.spec.version = patched_image
+        .split(':')
+        .last()
+        .unwrap_or("latest")
+        .to_string();
 
     let nodes_api: Api<StellarNode> = Api::namespaced(client.clone(), &namespace);
     nodes_api
-        .patch(&name, &PatchParams::apply("cve-handler"), &Patch::Apply(&node_patch))
+        .patch(
+            &name,
+            &PatchParams::apply("cve-handler"),
+            &Patch::Apply(&node_patch),
+        )
         .await?;
 
     info!("Rolling update initiated for {}/{}", namespace, name);
@@ -688,7 +684,11 @@ pub async fn rollback_version(
 
     let nodes_api: Api<StellarNode> = Api::namespaced(client.clone(), &namespace);
     nodes_api
-        .patch(&name, &PatchParams::apply("cve-handler"), &Patch::Apply(&node_patch))
+        .patch(
+            &name,
+            &PatchParams::apply("cve-handler"),
+            &Patch::Apply(&node_patch),
+        )
         .await?;
 
     info!("Rollback completed for {}/{}", namespace, name);

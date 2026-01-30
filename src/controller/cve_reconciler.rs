@@ -1,4 +1,3 @@
-
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::Pod;
@@ -12,12 +11,11 @@ use crate::crd::StellarNode;
 use crate::error::Result;
 
 use super::cve::{
-    CanaryTestRunner, CanaryTestStatus, CVERolloutStatus,
-    ConsensusHealthMonitor, RegistryScannerClient, CANARY_DEPLOYMENT_ANNOTATION,
-    CANARY_TEST_STATUS_ANNOTATION, CVE_DETECTED_ANNOTATION, CVE_PATCHED_VERSION_ANNOTATION,
-    CVE_ROLLBACK_REASON_ANNOTATION, CVE_ROLLOUT_STATUS_ANNOTATION, CVE_SCAN_TIME_ANNOTATION,
-    CVE_VULNERABLE_IMAGE_ANNOTATION, create_canary_deployment, delete_canary_deployment,
-    rollback_version, trigger_rolling_update,
+    create_canary_deployment, delete_canary_deployment, rollback_version, trigger_rolling_update,
+    CVERolloutStatus, CanaryTestRunner, CanaryTestStatus, ConsensusHealthMonitor,
+    RegistryScannerClient, CANARY_DEPLOYMENT_ANNOTATION, CANARY_TEST_STATUS_ANNOTATION,
+    CVE_DETECTED_ANNOTATION, CVE_PATCHED_VERSION_ANNOTATION, CVE_ROLLBACK_REASON_ANNOTATION,
+    CVE_ROLLOUT_STATUS_ANNOTATION, CVE_SCAN_TIME_ANNOTATION, CVE_VULNERABLE_IMAGE_ANNOTATION,
 };
 use crate::crd::CVEHandlingConfig;
 
@@ -93,10 +91,8 @@ async fn scan_and_initiate_patch(
 
     // In production, use actual registry scanner endpoint
     // For now, use a mock endpoint
-    let scanner = RegistryScannerClient::new(
-        "http://trivy-api.security-scanning:8080".to_string(),
-        None,
-    );
+    let scanner =
+        RegistryScannerClient::new("http://trivy-api.security-scanning:8080".to_string(), None);
 
     let image = get_node_image(client, node).await?;
     debug!("Scanning image for CVEs: {}", image);
@@ -114,7 +110,11 @@ async fn scan_and_initiate_patch(
     // Check if we should proceed with patching
     if scan_result.has_critical && config.critical_only {
         // Only patch critical vulnerabilities
-        if !scan_result.vulnerabilities.iter().any(|v| v.severity as i32 >= 4) {
+        if !scan_result
+            .vulnerabilities
+            .iter()
+            .any(|v| v.severity as i32 >= 4)
+        {
             info!(
                 "CVE scan for {}/{} found vulnerabilities but no critical ones",
                 namespace, name
@@ -224,7 +224,11 @@ async fn check_cve_patch_status(
     let name = node.name_any();
 
     let default_annotations = Default::default();
-    let annotations = node.metadata.annotations.as_ref().unwrap_or(&default_annotations);
+    let annotations = node
+        .metadata
+        .annotations
+        .as_ref()
+        .unwrap_or(&default_annotations);
 
     let canary_status_str = annotations
         .get(CANARY_TEST_STATUS_ANNOTATION)
@@ -290,10 +294,7 @@ async fn check_cve_patch_status(
 }
 
 /// Run health checks on canary pod
-async fn run_canary_health_checks(
-    client: &Client,
-    node: &StellarNode,
-) -> Result<CanaryTestStatus> {
+async fn run_canary_health_checks(client: &Client, node: &StellarNode) -> Result<CanaryTestStatus> {
     let namespace = node.namespace().unwrap_or_else(|| "default".to_string());
 
     // Get canary pod
@@ -321,7 +322,11 @@ async fn on_canary_test_passed(
     let name = node.name_any();
 
     let default_annotations = Default::default();
-    let annotations = node.metadata.annotations.as_ref().unwrap_or(&default_annotations);
+    let annotations = node
+        .metadata
+        .annotations
+        .as_ref()
+        .unwrap_or(&default_annotations);
 
     if let Some(patched_version) = annotations.get(CVE_PATCHED_VERSION_ANNOTATION) {
         info!(
@@ -362,7 +367,11 @@ async fn on_canary_test_failed(
     );
 
     let default_annotations = Default::default();
-    let annotations = node.metadata.annotations.as_ref().unwrap_or(&default_annotations);
+    let annotations = node
+        .metadata
+        .annotations
+        .as_ref()
+        .unwrap_or(&default_annotations);
 
     if let Some(canary_name) = annotations.get(CANARY_DEPLOYMENT_ANNOTATION) {
         delete_canary_deployment(client, node, canary_name).await?;
@@ -432,7 +441,11 @@ async fn monitor_consensus_during_rollout(
 
         // Get the previous version (vulnerable version before patch)
         let default_annotations = Default::default();
-        let annotations = node.metadata.annotations.as_ref().unwrap_or(&default_annotations);
+        let annotations = node
+            .metadata
+            .annotations
+            .as_ref()
+            .unwrap_or(&default_annotations);
         let vulnerable_image = annotations
             .get(CVE_VULNERABLE_IMAGE_ANNOTATION)
             .cloned()
@@ -455,7 +468,11 @@ async fn monitor_consensus_during_rollout(
         );
         new_annotations.insert(
             CVE_ROLLBACK_REASON_ANNOTATION.to_string(),
-            format!("Health: {:.2}% < {:.2}%", baseline_health * 100.0, config.consensus_health_threshold * 100.0),
+            format!(
+                "Health: {:.2}% < {:.2}%",
+                baseline_health * 100.0,
+                config.consensus_health_threshold * 100.0
+            ),
         );
 
         update_node_annotations(client, node, new_annotations).await?;
@@ -472,12 +489,20 @@ async fn get_node_image(client: &Client, node: &StellarNode) -> Result<String> {
     let deployments_api: Api<Deployment> = Api::namespaced(client.clone(), &namespace);
     let label_selector = format!("app.kubernetes.io/instance={}", node.name_any());
 
-    match deployments_api.list(&ListParams::default().labels(&label_selector)).await {
+    match deployments_api
+        .list(&ListParams::default().labels(&label_selector))
+        .await
+    {
         Ok(deployments) => {
             if let Some(deployment) = deployments.items.first() {
                 if let Some(spec) = &deployment.spec {
                     if let Some(metadata) = &spec.template.metadata {
-                        if let Some(containers) = &spec.template.spec.as_ref().and_then(|ps| ps.containers.first()) {
+                        if let Some(containers) = &spec
+                            .template
+                            .spec
+                            .as_ref()
+                            .and_then(|ps| ps.containers.first())
+                        {
                             if let Some(image) = &containers.image {
                                 return Ok(image.clone());
                             }
@@ -513,7 +538,11 @@ async fn update_node_annotations(
     });
 
     nodes_api
-        .patch(&name, &PatchParams::apply("cve-handler"), &Patch::Merge(patch))
+        .patch(
+            &name,
+            &PatchParams::apply("cve-handler"),
+            &Patch::Merge(patch),
+        )
         .await?;
 
     Ok(())
