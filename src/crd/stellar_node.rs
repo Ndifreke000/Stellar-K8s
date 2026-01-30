@@ -106,6 +106,19 @@ pub struct StellarNodeSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ingress: Option<IngressConfig>,
 
+    /// Load balancer configuration for external access (e.g. MetalLB)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_balancer: Option<LoadBalancerConfig>,
+
+    /// Global discovery configuration for cross-cluster discovery
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub global_discovery: Option<GlobalDiscoveryConfig>,
+
+    /// Cross-cluster configuration for multi-cluster federation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cross_cluster: Option<CrossClusterConfig>,
+
+    /// Rollout strategy for updates (RollingUpdate or Canary)
     #[serde(default)]
     pub strategy: RolloutStrategy,
 
@@ -145,6 +158,62 @@ fn default_replicas() -> i32 {
 }
 
 impl StellarNodeSpec {
+    /// Validate the spec based on node type
+    ///
+    /// Performs comprehensive validation of the StellarNodeSpec including:
+    /// - Checking that required config for node type is present
+    /// - Validating replica counts
+    /// - Ensuring node-type-specific constraints (e.g., Validators can't autoscale)
+    /// - Validating ingress configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the spec fails validation.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use stellar_k8s::crd::StellarNodeSpec;
+    ///
+    /// let spec = StellarNodeSpec {
+    ///     // ... configuration
+    /// # node_type: Default::default(),
+    /// # network: Default::default(),
+    /// # version: "v21".to_string(),
+    /// # history_mode: Default::default(),
+    /// # resources: Default::default(),
+    /// # storage: Default::default(),
+    /// # validator_config: None,
+    /// # horizon_config: None,
+    /// # soroban_config: None,
+    /// # replicas: 1,
+    /// # min_available: None,
+    /// # max_unavailable: None,
+    /// # suspended: false,
+    /// # alerting: false,
+    /// # database: None,
+    /// # managed_database: None,
+    /// # autoscaling: None,
+    /// # ingress: None,
+    /// # load_balancer: None,
+    /// # global_discovery: None,
+    /// # cross_cluster: None,
+    /// # strategy: Default::default(),
+    /// # maintenance_mode: false,
+    /// # network_policy: None,
+    /// # dr_config: None,
+    /// # topology_spread_constraints: None,
+    /// # resource_meta: None,
+    /// };
+    /// match spec.validate() {
+    ///     Ok(_) => println!("Valid spec"),
+    ///     Err(errors) => {
+    ///         for e in errors {
+    ///             eprintln!("Validation error in {}: {}", e.field, e.message);
+    ///         }
+    ///     }
+    /// }
+    /// ```
     pub fn validate(&self) -> Result<(), Vec<SpecValidationError>> {
         let mut errors: Vec<SpecValidationError> = Vec::new();
 
@@ -303,14 +372,14 @@ fn validate_load_balancer(lb: &LoadBalancerConfig, errors: &mut Vec<SpecValidati
             for (i, peer) in bgp.peers.iter().enumerate() {
                 if peer.address.trim().is_empty() {
                     errors.push(SpecValidationError::new(
-                        format!("spec.loadBalancer.bgp.peers[{}].address", i),
+                        format!("spec.loadBalancer.bgp.peers[{i}].address"),
                         "loadBalancer.bgp.peers[].address must not be empty",
                         "Set a valid IP or hostname for each BGP peer address.",
                     ));
                 }
                 if peer.asn == 0 {
                     errors.push(SpecValidationError::new(
-                        format!("spec.loadBalancer.bgp.peers[{}].asn", i),
+                        format!("spec.loadBalancer.bgp.peers[{i}].asn"),
                         "loadBalancer.bgp.peers[].asn must be a valid ASN",
                         "Set spec.loadBalancer.bgp.peers[].asn to a value between 1 and 4294967295.",
                     ));
@@ -413,14 +482,14 @@ fn validate_cross_cluster(cc: &CrossClusterConfig, errors: &mut Vec<SpecValidati
     for (i, peer) in cc.peer_clusters.iter().enumerate() {
         if peer.cluster_id.trim().is_empty() {
             errors.push(SpecValidationError::new(
-                format!("spec.crossCluster.peerClusters[{}].clusterId", i),
+                format!("spec.crossCluster.peerClusters[{i}].clusterId"),
                 "crossCluster.peerClusters[].clusterId must not be empty",
                 "Set a non-empty identifier for each entry in spec.crossCluster.peerClusters[].clusterId.",
             ));
         }
         if peer.endpoint.trim().is_empty() {
             errors.push(SpecValidationError::new(
-                format!("spec.crossCluster.peerClusters[{}].endpoint", i),
+                format!("spec.crossCluster.peerClusters[{i}].endpoint"),
                 "crossCluster.peerClusters[].endpoint must not be empty",
                 "Set a non-empty endpoint URL for each entry in spec.crossCluster.peerClusters[].endpoint.",
             ));
@@ -429,8 +498,7 @@ fn validate_cross_cluster(cc: &CrossClusterConfig, errors: &mut Vec<SpecValidati
             if threshold == 0 {
                 errors.push(SpecValidationError::new(
                     format!(
-                        "spec.crossCluster.peerClusters[{}].latencyThresholdMs",
-                        i
+                        "spec.crossCluster.peerClusters[{i}].latencyThresholdMs"
                     ),
                     "crossCluster.peerClusters[].latencyThresholdMs must be greater than 0",
                     "Set spec.crossCluster.peerClusters[].latencyThresholdMs to a value greater than 0.",
