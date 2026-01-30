@@ -133,9 +133,9 @@ impl CaptiveCoreConfigBuilder {
         // Stellar Core expects each archive to have a unique name
         for (idx, url) in self.history_archive_urls.iter().enumerate() {
             let archive_name = format!("archive{}", idx + 1);
-            toml.push_str(&format!("[HISTORY.{}]\n", archive_name));
+            toml.push_str(&format!("[HISTORY.{archive_name}]\n"));
             // Use curl to fetch history archives (standard Stellar pattern)
-            toml.push_str(&format!("get=\"curl -sf {}/{{0}} -o {{1}}\"\n\n", url));
+            toml.push_str(&format!("get=\"curl -sf {url}/{{0}} -o {{1}}\"\n\n"));
         }
 
         // Peer and HTTP ports
@@ -203,6 +203,7 @@ mod tests {
                 node_type: NodeType::SorobanRpc,
                 network: StellarNetwork::Testnet,
                 version: "v21.0.0".to_string(),
+                history_mode: Default::default(),
                 resources: crate::crd::ResourceRequirements {
                     requests: crate::crd::ResourceSpec {
                         cpu: "500m".to_string(),
@@ -235,17 +236,18 @@ mod tests {
                 suspended: false,
                 alerting: false,
                 database: None,
+                managed_database: None,
                 autoscaling: None,
                 ingress: None,
+                load_balancer: None,
+                global_discovery: None,
+                cross_cluster: None,
                 strategy: Default::default(),
                 maintenance_mode: false,
                 network_policy: None,
                 dr_config: None,
                 topology_spread_constraints: None,
-                load_balancer: None,
-                global_discovery: None,
-                cluster: None,
-                cross_cluster: None,
+                resource_meta: None,
             },
             status: None,
         }
