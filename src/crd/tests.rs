@@ -51,11 +51,6 @@ mod stellar_node_spec_validation {
             dr_config: None,
             topology_spread_constraints: None,
             resource_meta: None,
-            // New fields
-            load_balancer: None,
-            global_discovery: None,
-            cross_cluster: None,
-            cluster: None,
         }
     }
 
@@ -96,11 +91,6 @@ mod stellar_node_spec_validation {
             dr_config: None,
             topology_spread_constraints: None,
             resource_meta: None,
-            // New fields
-            load_balancer: None,
-            global_discovery: None,
-            cross_cluster: None,
-            cluster: None,
         }
     }
 
@@ -141,11 +131,6 @@ mod stellar_node_spec_validation {
             dr_config: None,
             topology_spread_constraints: None,
             resource_meta: None,
-            // New fields
-            load_balancer: None,
-            global_discovery: None,
-            cross_cluster: None,
-            cluster: None,
         }
     }
 

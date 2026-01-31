@@ -128,18 +128,6 @@ pub struct StellarNodeSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network_policy: Option<NetworkPolicyConfig>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub load_balancer: Option<LoadBalancerConfig>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub global_discovery: Option<GlobalDiscoveryConfig>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cross_cluster: Option<CrossClusterConfig>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cluster: Option<String>,
-
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dr_config: Option<DisasterRecoveryConfig>,
 
@@ -238,42 +226,136 @@ impl StellarNodeSpec {
         // 3. Node Type Specific Logic
         match self.node_type {
             NodeType::Validator => {
+                // Validator config required
                 if self.validator_config.is_none() {
                     errors.push(SpecValidationError::new(
                         "spec.validatorConfig",
                         "validatorConfig is required for Validator nodes",
-                        "Add a spec.validatorConfig section when nodeType is Validator.",
+                        "Add a spec.validatorConfig section with the required validator settings when nodeType is Validator.",
                     ));
                 }
+
+                // Exactly 1 replica required
                 if self.replicas != 1 {
                     errors.push(SpecValidationError::new(
                         "spec.replicas",
-                        "Validator must have 1 replica",
-                        "Set replicas to 1.",
+                        "Validator nodes must have exactly 1 replica",
+                        "Set spec.replicas to 1 for Validator nodes.",
                     ));
                 }
+
+                // Ingress not supported
                 if self.ingress.is_some() {
                     errors.push(SpecValidationError::new(
                         "spec.ingress",
-                        "Ingress not supported for Validators",
-                        "Remove spec.ingress.",
+                        "ingress is not supported for Validator nodes",
+                        "Remove spec.ingress for Validator nodes; expose Validator nodes using peer discovery or other supported mechanisms.",
                     ));
                 }
-            }
-            NodeType::Horizon | NodeType::SorobanRpc => {
-                let config_missing = match self.node_type {
-                    NodeType::Horizon => self.horizon_config.is_none(),
-                    NodeType::SorobanRpc => self.soroban_config.is_none(),
-                    _ => false,
-                };
-                if config_missing {
+
+                // Autoscaling not supported
+                if self.autoscaling.is_some() {
                     errors.push(SpecValidationError::new(
-                        "spec.config",
-                        "Missing node-specific config",
-                        "Provide the required config for the node type.",
+                        "spec.autoscaling",
+                        "autoscaling is not supported for Validator nodes",
+                        "Remove spec.autoscaling when nodeType is Validator; autoscaling is only supported for Horizon and SorobanRpc.",
+                    ));
+                }
+
+                // History archive validation
+                if let Some(ref validator_config) = self.validator_config {
+                    if validator_config.enable_history_archive
+                        && validator_config.history_archive_urls.is_empty()
+                    {
+                        errors.push(SpecValidationError::new(
+                            "spec.validatorConfig.historyArchiveUrls",
+                            "historyArchiveUrls must not be empty when enableHistoryArchive is true",
+                            "Provide at least one valid history archive URL in spec.validatorConfig.historyArchiveUrls when enableHistoryArchive is true.",
+                        ));
+                    }
+                }
+
+                // Canary strategy not supported
+                if matches!(self.strategy, RolloutStrategy::Canary(_)) {
+                    errors.push(SpecValidationError::new(
+                        "spec.strategy",
+                        "canary rollout strategy is not supported for Validator nodes",
+                        "Use RollingUpdate strategy for Validator nodes; canary is only supported for Horizon and SorobanRpc.",
                     ));
                 }
             }
+            NodeType::Horizon => {
+                // Horizon config required
+                if self.horizon_config.is_none() {
+                    errors.push(SpecValidationError::new(
+                        "spec.horizonConfig",
+                        "horizonConfig is required for Horizon nodes",
+                        "Add a spec.horizonConfig section with the required Horizon settings when nodeType is Horizon.",
+                    ));
+                }
+
+                // Validate autoscaling if present
+                if let Some(ref autoscaling) = self.autoscaling {
+                    if autoscaling.min_replicas == 0 {
+                        errors.push(SpecValidationError::new(
+                            "spec.autoscaling.minReplicas",
+                            "autoscaling.minReplicas must be at least 1",
+                            "Set spec.autoscaling.minReplicas to 1 or greater.",
+                        ));
+                    }
+                    if autoscaling.max_replicas < autoscaling.min_replicas {
+                        errors.push(SpecValidationError::new(
+                            "spec.autoscaling.maxReplicas",
+                            "autoscaling.maxReplicas must be >= minReplicas",
+                            "Set spec.autoscaling.maxReplicas to be greater than or equal to minReplicas.",
+                        ));
+                    }
+                }
+
+                // Validate ingress if present
+                if let Some(ref ingress) = self.ingress {
+                    validate_ingress(ingress, &mut errors);
+                }
+            }
+            NodeType::SorobanRpc => {
+                // Soroban config required
+                if self.soroban_config.is_none() {
+                    errors.push(SpecValidationError::new(
+                        "spec.sorobanConfig",
+                        "sorobanConfig is required for SorobanRpc nodes",
+                        "Add a spec.sorobanConfig section with the required Soroban RPC settings when nodeType is SorobanRpc.",
+                    ));
+                }
+
+                // Validate autoscaling if present
+                if let Some(ref autoscaling) = self.autoscaling {
+                    if autoscaling.min_replicas == 0 {
+                        errors.push(SpecValidationError::new(
+                            "spec.autoscaling.minReplicas",
+                            "autoscaling.minReplicas must be at least 1",
+                            "Set spec.autoscaling.minReplicas to 1 or greater.",
+                        ));
+                    }
+                    if autoscaling.max_replicas < autoscaling.min_replicas {
+                        errors.push(SpecValidationError::new(
+                            "spec.autoscaling.maxReplicas",
+                            "autoscaling.maxReplicas must be >= minReplicas",
+                            "Set spec.autoscaling.maxReplicas to be greater than or equal to minReplicas.",
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Validate optional features if present
+        if let Some(ref lb) = self.load_balancer {
+            validate_load_balancer(lb, &mut errors);
+        }
+        if let Some(ref gd) = self.global_discovery {
+            validate_global_discovery(gd, &mut errors);
+        }
+        if let Some(ref cc) = self.cross_cluster {
+            validate_cross_cluster(cc, &mut errors);
         }
 
         if errors.is_empty() {
@@ -871,7 +953,6 @@ mod tests {
             topology_spread_constraints: None,
             load_balancer: None,
             global_discovery: None,
-            cluster: None,
             cross_cluster: None,
             resource_meta: None,
         };
@@ -918,7 +999,6 @@ mod tests {
             load_balancer: None,
             global_discovery: None,
             cross_cluster: None,
-            cluster: None,
             resource_meta: None,
         };
 
