@@ -3,10 +3,288 @@ use std::process::{Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+/// Returns true if the given binary is accessible in PATH.
+fn tool_available(binary: &str) -> bool {
+    Command::new(binary)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
+}
+
 const OPERATOR_NAMESPACE: &str = "stellar-system";
 const TEST_NAMESPACE: &str = "stellar-e2e";
 const OPERATOR_NAME: &str = "stellar-operator";
 const NODE_NAME: &str = "test-soroban";
+const E2E_NODE_NAME: &str = "e2e-soroban";
+
+// ---------------------------------------------------------------------------
+// Issue #156: E2E reconciliation test
+//
+// Tests actual StellarNode reconciliation on a real Kind cluster.
+// Run with: cargo test --test e2e_kind -- --ignored
+// ---------------------------------------------------------------------------
+
+/// End-to-end test that exercises the full StellarNode reconciliation lifecycle:
+///
+/// 1. Start (or reuse) a Kind cluster.
+/// 2. Install CRDs from `config/crd/`.
+/// 3. Apply a sample StellarNode manifest.
+/// 4. Wait for the operator to create a Deployment and Service.
+/// 5. Assert that `status.phase` transitions to `Running`.
+/// 6. Delete the resource and verify all child resources are cleaned up.
+#[test]
+#[ignore]
+fn e2e_stellarnode_reconciliation() -> Result<(), Box<dyn std::error::Error>> {
+    // ── Prerequisite check ─────────────────────────────────────────────────────
+    // Skip gracefully when the required cluster tools are not installed.
+    for tool in &["kind", "kubectl", "docker"] {
+        if !tool_available(tool) {
+            eprintln!("Skipping e2e test: `{tool}` not found in PATH.");
+            return Ok(());
+        }
+    }
+
+    let cluster_name = std::env::var("KIND_CLUSTER_NAME").unwrap_or_else(|_| "stellar-e2e".into());
+    ensure_kind_cluster(&cluster_name)?;
+
+    // ── Install the CRD ──────────────────────────────────────────────────────
+    run_cmd(
+        "kubectl",
+        &["apply", "-f", "config/crd/stellarnode-crd.yaml"],
+    )?;
+
+    // ── Deploy the operator ──────────────────────────────────────────────────
+    let image =
+        std::env::var("E2E_OPERATOR_IMAGE").unwrap_or_else(|_| "stellar-operator:e2e".into());
+    let build_image = env_true("E2E_BUILD_IMAGE", true);
+    let load_image = env_true("E2E_LOAD_IMAGE", true);
+
+    if build_image {
+        run_cmd("docker", &["build", "-t", &image, "."])?;
+    }
+    if load_image {
+        run_cmd(
+            "kind",
+            &["load", "docker-image", &image, "--name", &cluster_name],
+        )?;
+    }
+
+    let operator_yaml = operator_manifest(&image);
+    let _cleanup = E2eCleanup::new(operator_yaml.clone(), E2E_NODE_NAME);
+
+    // Create operator namespace
+    run_cmd(
+        "kubectl",
+        &[
+            "create",
+            "namespace",
+            OPERATOR_NAMESPACE,
+            "--dry-run=client",
+            "-o",
+            "yaml",
+        ],
+    )
+    .and_then(|output| kubectl_apply(&output))?;
+
+    kubectl_apply(&operator_yaml)?;
+    run_cmd(
+        "kubectl",
+        &[
+            "rollout",
+            "status",
+            "deployment/stellar-operator",
+            "-n",
+            OPERATOR_NAMESPACE,
+            "--timeout=180s",
+        ],
+    )?;
+
+    // ── Create test namespace ─────────────────────────────────────────────────
+    run_cmd(
+        "kubectl",
+        &[
+            "create",
+            "namespace",
+            TEST_NAMESPACE,
+            "--dry-run=client",
+            "-o",
+            "yaml",
+        ],
+    )
+    .and_then(|output| kubectl_apply(&output))?;
+
+    // ── Apply the StellarNode manifest ────────────────────────────────────────
+    kubectl_apply(&e2e_soroban_manifest("v21.0.0"))?;
+
+    // ── Step 1: StellarNode resource created ──────────────────────────────────
+    wait_for("StellarNode exists", Duration::from_secs(60), || {
+        Ok(run_cmd(
+            "kubectl",
+            &["get", "stellarnode", E2E_NODE_NAME, "-n", TEST_NAMESPACE],
+        )
+        .is_ok())
+    })?;
+
+    // ── Step 2: Deployment created by operator ────────────────────────────────
+    wait_for("Deployment created", Duration::from_secs(90), || {
+        Ok(run_cmd(
+            "kubectl",
+            &["get", "deployment", E2E_NODE_NAME, "-n", TEST_NAMESPACE],
+        )
+        .is_ok())
+    })?;
+
+    // ── Step 3: Service created by operator ───────────────────────────────────
+    wait_for("Service created", Duration::from_secs(60), || {
+        Ok(run_cmd(
+            "kubectl",
+            &["get", "service", E2E_NODE_NAME, "-n", TEST_NAMESPACE],
+        )
+        .is_ok())
+    })?;
+
+    // ── Step 4: status.phase transitions to Running ───────────────────────────
+    wait_for(
+        "StellarNode phase == Running",
+        Duration::from_secs(120),
+        || {
+            let phase = run_cmd(
+                "kubectl",
+                &[
+                    "get",
+                    "stellarnode",
+                    E2E_NODE_NAME,
+                    "-n",
+                    TEST_NAMESPACE,
+                    "-o",
+                    "jsonpath={.status.phase}",
+                ],
+            )
+            .unwrap_or_default();
+            Ok(phase == "Running")
+        },
+    )?;
+
+    // ── Step 5: Delete and verify cleanup ─────────────────────────────────────
+    run_cmd(
+        "kubectl",
+        &[
+            "delete",
+            "stellarnode",
+            E2E_NODE_NAME,
+            "-n",
+            TEST_NAMESPACE,
+            "--timeout=180s",
+            "--wait=true",
+        ],
+    )?;
+
+    wait_for(
+        "Child resources cleaned up",
+        Duration::from_secs(90),
+        || {
+            let deployment = run_cmd(
+                "kubectl",
+                &["get", "deployment", E2E_NODE_NAME, "-n", TEST_NAMESPACE],
+            );
+            let service = run_cmd(
+                "kubectl",
+                &["get", "service", E2E_NODE_NAME, "-n", TEST_NAMESPACE],
+            );
+            Ok(deployment.is_err() && service.is_err())
+        },
+    )?;
+
+    Ok(())
+}
+
+/// Manifest for the e2e reconciliation test node.
+fn e2e_soroban_manifest(version: &str) -> String {
+    format!(
+        r#"apiVersion: stellar.org/v1alpha1
+kind: StellarNode
+metadata:
+  name: {node_name}
+  namespace: {namespace}
+spec:
+  nodeType: SorobanRpc
+  network: Testnet
+  version: "{version}"
+  replicas: 1
+  sorobanConfig:
+    stellarCoreUrl: "http://stellar-core.default:11626"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "250m"
+      memory: "256Mi"
+  storage:
+    storageClass: "standard"
+    size: "1Gi"
+    retentionPolicy: Delete
+"#,
+        node_name = E2E_NODE_NAME,
+        namespace = TEST_NAMESPACE,
+        version = version,
+    )
+}
+
+/// RAII cleanup guard for the e2e reconciliation test.
+struct E2eCleanup {
+    operator_manifest: String,
+    node_name: &'static str,
+}
+
+impl E2eCleanup {
+    fn new(operator_manifest: String, node_name: &'static str) -> Self {
+        Self {
+            operator_manifest,
+            node_name,
+        }
+    }
+}
+
+impl Drop for E2eCleanup {
+    fn drop(&mut self) {
+        let _ = run_cmd_quiet(
+            "kubectl",
+            &[
+                "delete",
+                "stellarnode",
+                self.node_name,
+                "-n",
+                TEST_NAMESPACE,
+                "--ignore-not-found=true",
+                "--timeout=60s",
+                "--wait=true",
+            ],
+        );
+        let _ =
+            run_cmd_with_stdin_quiet("kubectl", &["delete", "-f", "-"], &self.operator_manifest);
+        let _ = run_cmd_quiet(
+            "kubectl",
+            &[
+                "delete",
+                "namespace",
+                TEST_NAMESPACE,
+                "--ignore-not-found=true",
+            ],
+        );
+        let _ = run_cmd_quiet(
+            "kubectl",
+            &[
+                "delete",
+                "namespace",
+                OPERATOR_NAMESPACE,
+                "--ignore-not-found=true",
+            ],
+        );
+    }
+}
 
 #[test]
 fn e2e_kind_install_crud_upgrade_delete() -> Result<(), Box<dyn Error>> {
