@@ -14,7 +14,7 @@ use super::types::{
     DisasterRecoveryStatus, ExternalDatabaseConfig, GlobalDiscoveryConfig, HistoryMode,
     HorizonConfig, IngressConfig, LoadBalancerConfig, ManagedDatabaseConfig, NetworkPolicyConfig,
     NodeType, ResourceRequirements, RetentionPolicy, RolloutStrategy, SorobanConfig,
-    StellarNetwork, StorageConfig, ValidatorConfig,
+    StellarNetwork, StorageConfig, ValidatorConfig, VpaConfig,
 };
 
 /// Structured validation error for `StellarNodeSpec`
@@ -102,6 +102,9 @@ pub struct StellarNodeSpec {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autoscaling: Option<AutoscalingConfig>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vpa_config: Option<VpaConfig>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ingress: Option<IngressConfig>,
@@ -202,6 +205,7 @@ impl StellarNodeSpec {
     /// # topology_spread_constraints: None,
     /// # cve_handling: None,
     /// # read_replica_config: None,
+    /// # vpa_config: None,
     /// # resource_meta: None,
     /// };
     /// match spec.validate() {
@@ -965,6 +969,7 @@ mod tests {
             cve_handling: None,
             read_replica_config: None,
             resource_meta: None,
+            vpa_config: None,
         };
 
         assert!(spec.validate().is_err());
@@ -1012,6 +1017,7 @@ mod tests {
             cve_handling: None,
             read_replica_config: None,
             resource_meta: None,
+            vpa_config: None,
         };
 
         assert!(spec.validate().is_ok());

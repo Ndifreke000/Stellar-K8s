@@ -529,6 +529,7 @@ mod tests {
                 database: None,
                 managed_database: None,
                 autoscaling: None,
+                vpa_config: None,
                 ingress: None,
                 load_balancer: None,
                 global_discovery: None,
