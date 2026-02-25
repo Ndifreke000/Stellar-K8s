@@ -188,3 +188,9 @@ Bringing nearly 5 years of DevOps experience and a deep background in blockchain
 ## 📄 License
 
 This project is licensed under the [Apache 2.0 License](LICENSE).
+
+---
+
+## 📝 Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes and releases.
