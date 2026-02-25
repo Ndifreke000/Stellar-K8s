@@ -17,6 +17,7 @@ use crate::{Error, MtlsConfig, Result};
 
 use super::custom_metrics;
 use super::handlers;
+use super::sustainability;
 
 /// Metrics endpoint handler
 #[cfg(feature = "metrics")]

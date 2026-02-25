@@ -181,11 +181,16 @@ fn build_read_statefulset(
         config.replicas
     };
 
+    // Add carbon-aware scheduling annotation for read replicas
+    let mut annotations = std::collections::BTreeMap::new();
+    annotations.insert("stellar.org/carbon-aware".to_string(), "enabled".to_string());
+
     StatefulSet {
         metadata: ObjectMeta {
             name: Some(name.clone()),
             namespace: node.namespace(),
             labels: Some(labels.clone()),
+            annotations: Some(annotations),
             owner_references: Some(vec![super::resources::owner_reference(node)]),
             ..Default::default()
         },
