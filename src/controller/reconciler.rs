@@ -45,7 +45,10 @@ use crate::crd::{
 };
 use crate::error::{Error, Result};
 
-use super::archive_health::{calculate_backoff, check_history_archive_health, ArchiveHealthResult};
+use super::archive_health::{
+    calculate_backoff, check_archive_integrity, check_history_archive_health,
+    ArchiveHealthResult, ARCHIVE_LAG_THRESHOLD,
+};
 use super::conditions;
 use super::cve_reconciler;
 use super::dr;
@@ -531,6 +534,54 @@ pub(crate) async fn apply_stellar_node(
                             },
                         )
                         .await?;
+                    }
+                }
+            }
+        }
+    }
+
+    // Periodic archive integrity check (every 1 hour) for validators with archive enabled.
+    // This compares stellar-history.json ledger sequences against the validator's current
+    // ledger and sets/clears the ArchiveIntegrityDegraded condition + Prometheus alert metric.
+    if node.spec.node_type == NodeType::Validator {
+        if let Some(validator_config) = &node.spec.validator_config {
+            if validator_config.enable_history_archive
+                && !validator_config.history_archive_urls.is_empty()
+            {
+                const ARCHIVE_CHECK_INTERVAL_SECS: i64 = 3600;
+                let last_check_time = node
+                    .status
+                    .as_ref()
+                    .and_then(|s| {
+                        s.conditions
+                            .iter()
+                            .find(|c| c.type_ == "ArchiveIntegrityDegraded")
+                            .map(|c| c.last_transition_time.clone())
+                    })
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc));
+
+                let should_run = match last_check_time {
+                    None => true, // never checked
+                    Some(last) => {
+                        let age_secs =
+                            (chrono::Utc::now() - last).num_seconds();
+                        age_secs >= ARCHIVE_CHECK_INTERVAL_SECS
+                    }
+                };
+
+                if should_run {
+                    if let Err(e) = run_archive_integrity_check(
+                        client,
+                        node,
+                        &validator_config.history_archive_urls,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "Archive integrity check error for {}/{}: {}",
+                            namespace, name, e
+                        );
                     }
                 }
             }
@@ -1481,6 +1532,124 @@ async fn update_status(
 }
 
 /// Update the status with archive health check results
+/// Run the hourly archive integrity check for a validator node.
+///
+/// Fetches `stellar-history.json` from each configured archive, compares the reported
+/// ledger sequence to the node's current ledger, and:
+/// - Sets / clears the `ArchiveIntegrityDegraded` condition on the node's status.
+/// - Updates the `stellar_archive_ledger_lag` Prometheus gauge so alert rules can fire.
+///
+/// The function is intentionally fire-and-forget on individual per-URL errors so that a
+/// single unreachable archive does not block the rest of reconciliation.
+async fn run_archive_integrity_check(
+    client: &Client,
+    node: &StellarNode,
+    archive_urls: &[String],
+) -> Result<()> {
+    let namespace = node.namespace().unwrap_or_else(|| "default".to_string());
+    let name = node.name_any();
+
+    let node_ledger = node
+        .status
+        .as_ref()
+        .and_then(|s| s.ledger_sequence)
+        .unwrap_or(0);
+
+    // If the node has not yet reported a ledger we can't compute meaningful lag values.
+    // Skip until a ledger becomes available.
+    if node_ledger == 0 {
+        debug!(
+            "Skipping archive integrity check for {}/{}: node ledger not yet available",
+            namespace, name
+        );
+        return Ok(());
+    }
+
+    info!(
+        "Running periodic archive integrity check for {}/{} (node_ledger={})",
+        namespace, name, node_ledger
+    );
+
+    let results = check_archive_integrity(archive_urls, node_ledger, None).await;
+
+    // Determine the overall worst-case lag across all archives.
+    let degraded_archives: Vec<_> = results.iter().filter(|r| !r.is_healthy()).collect();
+    let any_degraded = !degraded_archives.is_empty();
+    let max_lag = results
+        .iter()
+        .filter_map(|r| r.lag)
+        .max()
+        .unwrap_or(0);
+
+    // Update Prometheus metric with the maximum observed lag.
+    #[cfg(feature = "metrics")]
+    metrics::set_archive_ledger_lag(
+        &namespace,
+        &name,
+        &node.spec.node_type.to_string(),
+        node.spec.network.passphrase(),
+        max_lag as i64,
+    );
+
+    // Patch the Degraded condition on the node status.
+    let api: Api<StellarNode> = Api::namespaced(client.clone(), &namespace);
+    let mut conds = node
+        .status
+        .as_ref()
+        .map(|s| s.conditions.clone())
+        .unwrap_or_default();
+
+    if any_degraded {
+        let messages: Vec<String> = degraded_archives.iter().map(|r| r.summary()).collect();
+        let message = messages.join("; ");
+        warn!(
+            "Archive integrity degraded for {}/{}: {}",
+            namespace, name, message
+        );
+        emit_event(
+            client,
+            node,
+            "Warning",
+            "ArchiveIntegrityDegraded",
+            &format!("History archive(s) are lagging (max lag={max_lag}): {message}"),
+        )
+        .await?;
+        conditions::set_condition(
+            &mut conds,
+            "ArchiveIntegrityDegraded",
+            conditions::CONDITION_STATUS_TRUE,
+            "ArchiveLagging",
+            &format!(
+                "Archive lag exceeds threshold of {ARCHIVE_LAG_THRESHOLD} ledgers. Max lag={max_lag}. {message}"
+            ),
+        );
+    } else {
+        // All archives healthy: clear (or keep cleared) the Degraded sub-condition.
+        conditions::set_condition(
+            &mut conds,
+            "ArchiveIntegrityDegraded",
+            conditions::CONDITION_STATUS_FALSE,
+            "ArchiveInSync",
+            &format!(
+                "All {} archive(s) are within {} ledgers of the node",
+                results.len(),
+                ARCHIVE_LAG_THRESHOLD
+            ),
+        );
+    }
+
+    let patch = serde_json::json!({ "status": { "conditions": conds } });
+    api.patch_status(
+        &name,
+        &PatchParams::apply("stellar-operator"),
+        &Patch::Merge(&patch),
+    )
+    .await
+    .map_err(Error::KubeError)?;
+
+    Ok(())
+}
+
 async fn update_archive_health_status(
     client: &Client,
     node: &StellarNode,

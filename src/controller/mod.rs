@@ -39,7 +39,10 @@ mod traffic_test;
 pub mod vpa;
 mod vsl;
 
-pub use archive_health::{calculate_backoff, check_history_archive_health, ArchiveHealthResult};
+pub use archive_health::{
+    calculate_backoff, check_archive_integrity, check_history_archive_health,
+    ArchiveHealthResult, ArchiveIntegrityResult, ARCHIVE_LAG_THRESHOLD,
+};
 pub use cross_cluster::{check_peer_latency, ensure_cross_cluster_services, PeerLatencyStatus};
 pub use cve_reconciler::reconcile_cve_patches;
 pub use finalizers::STELLAR_NODE_FINALIZER;

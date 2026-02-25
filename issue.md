@@ -1,11 +1,11 @@
-The src/controller/peer_discovery.rs module has no dedicated unit tests. Peer discovery is a critical path for validator nodes.
+History archives are the backbone of Stellar's decentralized history. We need a controller that periodically verifies the integrity of these archives by checking for stale ledgers or missing checkpoints.
 
 ✅ Acceptance Criteria
-Add a peer_discovery_test.rs file with unit tests covering:
-Peer list building from StellarNode CRDs
-DNS lookups for peer addresses (mock the DNS client)
-The peer scoring/selection algorithm
-Edge cases: empty peer list, all peers unreachable
-Run cargo test and confirm all new tests pass.
+Add a new ArchiveCheck routine in the operator (or integrate into archive_health.rs).
+Periodically (every 1 hour) download the stellar-history.json from the configured historyArchiveUrls.
+Compare the ledger sequence in the archive with the actual network state.
+If the archive is lagging significantly, update the StellarNodeStatus with a Degraded condition and fire a Prometheus alert.
+Unit test the edge cases (archive unreachable, malformed JSON, sync lag detection).
 📚 Resources
-src/controller/peer_discovery.rs
+src/controller/archive_health.rs
+Stellar History Archives
