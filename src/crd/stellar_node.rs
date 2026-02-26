@@ -760,6 +760,10 @@ pub struct StellarNodeStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub canary_version: Option<String>,
 
+    /// Timestamp when the canary was created (RFC3339)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_start_time: Option<String>,
+
     /// Version of the database schema after last successful migration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_migrated_version: Option<String>,
@@ -940,6 +944,7 @@ mod tests {
             storage: Default::default(),
             validator_config: Some(ValidatorConfig {
                 seed_secret_ref: "test".to_string(),
+                seed_secret_source: Default::default(),
                 quorum_set: None,
                 enable_history_archive: false,
                 history_archive_urls: vec![],
