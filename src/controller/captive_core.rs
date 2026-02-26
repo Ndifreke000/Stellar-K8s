@@ -253,6 +253,7 @@ mod tests {
                 db_maintenance_config: None,
                 resource_meta: None,
                 vpa_config: None,
+                read_pool_endpoint: None,
             },
             status: None,
         }
