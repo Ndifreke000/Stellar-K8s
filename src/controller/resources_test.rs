@@ -60,6 +60,7 @@ mod tests {
             cve_handling: None,
             read_replica_config: None,
             read_pool_endpoint: None,
+            db_maintenance_config: None,
             resource_meta: None,
         }
     }
