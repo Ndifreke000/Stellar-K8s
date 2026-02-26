@@ -130,13 +130,15 @@ fn build_pvc(node: &StellarNode) -> PersistentVolumeClaim {
     let annotations = node.spec.storage.annotations.clone().unwrap_or_default();
 
     // When restoring from a VolumeSnapshot, set dataSource so the PVC is populated from the snapshot
-    let data_source = node.spec.restore_from_snapshot.as_ref().map(|r| {
-        TypedLocalObjectReference {
+    let data_source = node
+        .spec
+        .restore_from_snapshot
+        .as_ref()
+        .map(|r| TypedLocalObjectReference {
             api_group: Some("snapshot.storage.k8s.io".to_string()),
             kind: "VolumeSnapshot".to_string(),
             name: r.volume_snapshot_name.clone(),
-        }
-    });
+        });
 
     PersistentVolumeClaim {
         metadata: merge_resource_meta(

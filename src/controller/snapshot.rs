@@ -14,7 +14,9 @@ use kube::{Client, ResourceExt};
 use tracing::{info, instrument, warn};
 
 use crate::controller::resource_meta::merge_resource_meta;
-use crate::controller::resources::{owner_reference, resource_name, standard_labels as node_standard_labels};
+use crate::controller::resources::{
+    owner_reference, resource_name, standard_labels as node_standard_labels,
+};
 use crate::crd::{SnapshotScheduleConfig, StellarNode};
 use crate::error::{Error, Result};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -69,7 +71,11 @@ pub async fn reconcile_snapshot(
         }
     }
 
-    let snapshot_name = format!("{}-data-{}", name, chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+    let snapshot_name = format!(
+        "{}-data-{}",
+        name,
+        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+    );
     create_volume_snapshot(client, node, &snapshot_name, &pvc_name, config).await?;
 
     // Enforce retention: list snapshots for this node and delete oldest if over limit
@@ -165,7 +171,10 @@ async fn create_volume_snapshot(
             info!("VolumeSnapshot {} already exists", snapshot_name);
         }
         Err(kube::Error::Api(e)) if e.code == 404 => {
-            info!("Creating VolumeSnapshot {} for PVC {}", snapshot_name, pvc_name);
+            info!(
+                "Creating VolumeSnapshot {} for PVC {}",
+                snapshot_name, pvc_name
+            );
             api.create(&PostParams::default(), &snapshot).await?;
         }
         Err(e) => return Err(Error::KubeError(e)),
@@ -184,8 +193,8 @@ async fn prune_old_snapshots(
     let api_resource = volume_snapshot_api_resource();
     let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), &namespace, &api_resource);
 
-    let list_params = ListParams::default()
-        .labels(&format!("stellar.org/snapshot-of={}", node.name_any()));
+    let list_params =
+        ListParams::default().labels(&format!("stellar.org/snapshot-of={}", node.name_any()));
     let list = api.list(&list_params).await.map_err(Error::KubeError)?;
 
     let mut items: Vec<_> = list
@@ -201,7 +210,10 @@ async fn prune_old_snapshots(
 
     let to_remove = items.len().saturating_sub(retention_count as usize);
     for (name, _) in items.into_iter().take(to_remove) {
-        info!("Pruning old VolumeSnapshot {} (retention limit {})", name, retention_count);
+        info!(
+            "Pruning old VolumeSnapshot {} (retention limit {})",
+            name, retention_count
+        );
         let _ = api.delete(&name, &DeleteParams::default()).await;
     }
 
@@ -239,4 +251,3 @@ async fn update_snapshot_annotations(
 
     Ok(())
 }
-

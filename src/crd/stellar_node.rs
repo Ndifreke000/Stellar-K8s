@@ -200,6 +200,8 @@ impl StellarNodeSpec {
     /// # load_balancer: None,
     /// # global_discovery: None,
     /// # cross_cluster: None,
+    /// # snapshot_schedule: None,
+    /// # restore_from_snapshot: None,
     /// # strategy: Default::default(),
     /// # maintenance_mode: false,
     /// # network_policy: None,
@@ -298,14 +300,18 @@ impl StellarNodeSpec {
                     ));
                 }
                 // Snapshot schedule and restore only apply to Validators (ledger data)
-                if self.snapshot_schedule.is_some() || self.restore_from_snapshot.is_some() {
-                    if self.restore_from_snapshot.as_ref().map(|r| r.volume_snapshot_name.is_empty()).unwrap_or(false) {
-                        errors.push(SpecValidationError::new(
-                            "spec.restoreFromSnapshot.volumeSnapshotName",
-                            "volumeSnapshotName must not be empty when restoreFromSnapshot is set",
-                            "Set spec.restoreFromSnapshot.volumeSnapshotName to an existing VolumeSnapshot name.",
-                        ));
-                    }
+                if (self.snapshot_schedule.is_some() || self.restore_from_snapshot.is_some())
+                    && self
+                        .restore_from_snapshot
+                        .as_ref()
+                        .map(|r| r.volume_snapshot_name.is_empty())
+                        .unwrap_or(false)
+                {
+                    errors.push(SpecValidationError::new(
+                        "spec.restoreFromSnapshot.volumeSnapshotName",
+                        "volumeSnapshotName must not be empty when restoreFromSnapshot is set",
+                        "Set spec.restoreFromSnapshot.volumeSnapshotName to an existing VolumeSnapshot name.",
+                    ));
                 }
             }
             NodeType::Horizon => {
