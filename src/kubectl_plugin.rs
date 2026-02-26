@@ -543,6 +543,7 @@ mod tests {
                 read_replica_config: None,
                 db_maintenance_config: None,
                 resource_meta: None,
+                read_pool_endpoint: None,
             },
             status: Some(StellarNodeStatus {
                 #[allow(deprecated)]
